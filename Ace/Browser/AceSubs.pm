@@ -105,6 +105,7 @@ use Ace::Browser::SiteDefs;
 use Ace 1.76;
 use CGI qw(:standard escape);
 use CGI::Cookie;
+use File::Path 'mkpath';
 
 use vars qw/@ISA @EXPORT @EXPORT_OK $VERSION %EXPORT_TAGS 
   %DB %OPEN $HEADER $TOP @COOKIES
@@ -112,7 +113,7 @@ use vars qw/@ISA @EXPORT @EXPORT_OK $VERSION %EXPORT_TAGS
 
 require Exporter;
 @ISA = qw(Exporter);
-$VERSION = 1.15;
+$VERSION = 1.20;
 
 ######################### This is the list of exported subroutines #######################
 @EXPORT = qw(
@@ -120,7 +121,7 @@ $VERSION = 1.15;
 	     OpenDatabase Object2URL Url
 	     ObjectLink Configuration PrintTop PrintBottom);
 @EXPORT_OK = qw(AceRedirect Toggle ResolveUrl AceInit AceAddCookie
-		AceHeader TypeSelector Style
+		AceHeader TypeSelector Style AcePicRoot
 		Header Footer DB_Name AceMultipleChoices);
 %EXPORT_TAGS = ( );
 
@@ -289,8 +290,7 @@ This subroutine is not exported by default.
 sub AceMultipleChoices {
   my ($symbol,$report,$objects) = @_;
   if ($objects && @$objects == 1) {
-    my $url = Configuration()->display($report,'url');
-    my $destination = ResolveUrl($url => "name=$objects->[0]");
+    my $destination = Object2URL($objects->[0]);
     AceHeader(-Refresh => "1; URL=$destination");
     print start_html (
 			   '-Title' => 'Redirect',
@@ -298,7 +298,7 @@ sub AceMultipleChoices {
 			),
       h1('Redirect'),
       p("Automatically transforming this query into a request for corresponding object",
-	     a({-href => Object2URL($objects->[0])},$objects->[0]->class.':',$objects->[0])),
+	ObjectLink($objects->[0],$objects->[0]->class.':'.$objects->[0])),
       p("Please wait..."),
       Footer(),
       end_html();
@@ -335,6 +335,36 @@ sub AceNotFound {
   Apache->exit(0) if defined &Apache::exit;
   exit(0);
 }
+
+=item ($uri,$physical_path) = AcePicRoot($directory)
+
+This function returns the physical and URL paths of a temporary
+directory in which the pic script can write pictures.  Not exported by
+default.  Returns a two-element list containing the URL and physical
+path.
+
+=cut
+
+sub AcePicRoot {
+  my $path = shift;
+  my $umask = umask();
+  umask 002;  # want this writable by group
+  my ($picroot,$uri);
+  if ($ENV{MOD_PERL}) { # we have apache, so no reason not to take advantage of it
+    my $r = Apache->request;
+    $uri  = join('/',Configuration()->Pictures->[0],"/",$path);
+    my $subr = $r->lookup_uri($uri);
+    $picroot = $subr->filename if $subr;
+  } else {
+    ($uri,$picroot) = @{Configuration()->Pictures} if Configuration()->Pictures;
+    $uri     .= "/$path";
+    $picroot .= "/$path";
+  }
+  mkpath ($picroot,0,0777) || AceError("Can't create directory to store image in") unless -d $picroot;
+  umask $umask;
+  return ($uri,$picroot);
+}
+
 
 =item AceRedirect($report,$object)
 
@@ -554,7 +584,7 @@ sub Header {
   }
   }
 
-  my ($home,$label) = @{$config->Home};
+  my ($home,$label) = @{$config->Home} if $config->Home;
 
   return table({-border=>0,-cellspacing=>1,-width=>'100%'},
 	       Tr(td({-align=>'CENTER',-class=>'searchbanner'},\@row)),
@@ -632,18 +662,20 @@ This function is not exported by default.
 
 =cut
 
+use Carp 'cluck';
+
 ################ open a database #################
 sub OpenDatabase {
   my $name = shift || get_symbolic();
   AceInit();
   $name =~ s!/$!!;
   my $db = $DB{$name};
-  unless ($db and $db->ping) {
-    my ($host,$port,$name,$password) = getDatabasePorts($name);
-    my @auth = (-user=>$name,-pass=>$password) if $name && $password;
-    return $DB{$name} = Ace->connect(-host=>$host,-port=>$port,-timeout=>50,@auth);
-  }
-  return $db;
+  return $db if $db && $db->ping;
+
+  my ($host,$port,$user,$password) = getDatabasePorts($name);
+  my @auth = (-user=>$user,-pass=>$password) if $name && $password;
+  $DB{$name} = Ace->connect(-host=>$host,-port=>$port,-timeout=>50,@auth);
+  return $DB{$name};
 }
 
 =item PrintTop($object,$class,$title,@html_headers)
