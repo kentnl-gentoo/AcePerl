@@ -17,7 +17,7 @@ use overload
 
 # Optional exports
 @EXPORT_OK = qw(rearrange ACE_PARSE);
-$VERSION = '1.70';
+$VERSION = '1.74';
 
 use constant STATUS_WAITING => 0;
 use constant STATUS_PENDING => 1;
@@ -45,7 +45,7 @@ sub connect {
   my $class = shift;
   my ($host,$port,$user,$pass,$path,$program,
       $objclass,$timeout,$query_timeout,$database,
-      $server_type,$url,$u,$p);
+      $server_type,$url,$u,$p,$other);
 
   # one-argument single "URL" form
   if (@_ == 1) {
@@ -54,9 +54,9 @@ sub connect {
 
   # multi-argument (traditional) form
   ($host,$port,$user,$pass,
-   $path,$program,$objclass,$timeout,$query_timeout,$url) = 
+   $path,$objclass,$timeout,$query_timeout,$url,$other) = 
      rearrange(['HOST','PORT','USER','PASS',
-		'PATH','PROGRAM','CLASS','TIMEOUT',
+		'PATH','CLASS','TIMEOUT',
 		'QUERY_TIMEOUT','URL'],@_);
 
   ($host,$port,$u,$p,$server_type) = $class->process_url($url) 
@@ -78,9 +78,9 @@ sub connect {
   # we've normalized parameters, so do the actual connect
   eval "require $server_type" || croak "Module $server_type not loaded: $@";
   if ($path) {
-    $database = $server_type->connect($path);
+    $database = $server_type->connect(-path=>$path,%$other);
   } else {
-    $database = $server_type->connect($host,$port,$query_timeout,$user,$pass);
+    $database = $server_type->connect($host,$port,$query_timeout,$user,$pass,%$other);
   }
   
   unless ($database) {
@@ -187,6 +187,28 @@ sub fetch {
     @h = $filled ? $self->_fetch($count,$offset) : $self->_list($count,$offset);
   }
   return wantarray ? @h : $h[0];
+}
+
+# make a new object using indicated class and name pattern
+sub new {
+  my $self = shift;
+  my ($class,$pattern) = rearrange([['CLASS'],['NAME','PATTERN']],@_);
+  croak "You must provide -class and -pattern arguments" 
+    unless $class && $pattern;
+  # escape % signs in the string
+  $pattern = Ace->freeprotect($pattern);
+  $pattern =~ s/(?<!\\)%/\\%/g;
+  my $r = $self->raw_query("new $class $pattern");
+  if (defined($r) and $r=~/write access/im) {  # this keeps changing
+    $Ace::Error = "Write access denied";
+    return;
+  }
+
+  unless ($r =~ /($class)\s+\"([^\"]+)\"$/im) {
+    $Ace::Error = $r;
+    return;
+  }
+  $self->fetch($1 => $2);
 }
 
 # perform an AQL query
@@ -323,7 +345,7 @@ sub rearrange {
         }
         push(@return_array,$value);
     }
-    push (@return_array,{%param}) if %param;
+    push (@return_array,\%param) if %param;
     return @return_array;
 }
 
@@ -889,6 +911,25 @@ the second argument to this method.
 
 Any parse error messages are accumulated in Ace->error().
 
+=head2 new() method
+
+  $object = $db->parse($class => $name);
+
+This method creates a new object in the database of type $class and
+name $name.  If successful, it returns the newly-created object.
+Otherwise it returns undef and sets $db->error().
+
+$name may contain sprintf()-style patterns.  If one of the patterns is
+%d (or a variant), Acedb uses a class-specific unique numbering to return
+a unique name.  For example:
+
+  $paper = $db->new(Paper => 'wgb%06d');
+
+The object is created in the database atomically.  There is no chance to rollback as there is
+in Ace::Object's object editing methods.
+
+See also the Ace::Object->add() and replace() methods.
+
 =head2 list() method
 
     @objects = $db->list(class,pattern,[count,offset]);
@@ -1152,6 +1193,19 @@ For your convenience, you can call error() in any of several ways:
     print $obj->error(); # $object is an Ace::Object
 
 There's also a global named $Ace::Error that you are free to use.
+
+=head2 datetime() and date()
+
+  $datetime = Ace->datetime($time);
+  $today    = Ace->datetime();
+  $date     = Ace->date($time);
+  $today    = Ace->date([$time]);
+
+These convenience functions convert the UNIX timestamp given by $time
+(seconds since the epoch) into a datetime string in the format that
+ACEDB requires.  date() will truncate the time portion.
+
+If not provided, $time defaults to localtime().
 
 =head1 THE LOW LEVEL C API
 
@@ -1652,3 +1706,18 @@ sub _restore_iterator {
   return 1;
 }
 
+sub datetime {
+  my $self = shift;
+  my $time = shift || time;
+  my ($sec,$min,$hour,$day,$mon,$year) = localtime($time);
+  $year += 1900;   # avoid Y3K bug
+  sprintf("%4d-%02d-%02d %02d:%02d:%02d",$year,$mon+1,$day,$hour,$min,$sec);
+}
+
+sub date {
+  my $self = shift;
+  my $time = shift || time;
+  my ($sec,$min,$hour,$day,$mon,$year) = localtime($time);
+  $year += 1900;   # avoid Y3K bug
+  sprintf("%4d-%02d-%02d",$year,$mon+1,$day);
+}

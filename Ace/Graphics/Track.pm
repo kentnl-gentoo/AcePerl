@@ -16,6 +16,8 @@ sub AUTOLOAD {
   $self->factory->$func_name(@_);
 }
 
+sub DESTROY { }
+
 # Pass a list of Ace::Sequence::Feature objects, and a glyph name
 sub new {
   my $class = shift;
@@ -87,7 +89,7 @@ sub width {
 sub scale_to_segment {
   my $self = shift;
   my ($segment,$desired_width) = @_;
-  $self->set_scale($segment->length,$desired_width);
+  $self->set_scale(abs($segment->length),$desired_width);
 }
 
 sub set_scale {
@@ -160,7 +162,6 @@ sub draw {
     my $x = $left - length($label) * $font->width;
     $gd->string($font,$x,$y,$label,$self->factory->fontcolor);
   }
-
   $_->draw($gd,$left,$top) foreach @$glyphs;
 
   if ($self->factory->option('connectgroups')) {
@@ -215,22 +216,35 @@ sub _bump {
   my $glyphs = shift;
   my $bump_direction = $self->bump;  # +1 means bump down, -1 means bump up
 
-  my %occupied;
+  my @occupied;
+  my $rightmost = -2;
   for my $g (sort { $a->left <=> $b->left} @$glyphs) {
 
     my $pos = 0;
     while (1) {
-      my $previous = $occupied{$pos};
-      last if !$previous || $previous->right + 2 < $g->left; # no collision at this position
+      # look for collisions
+      last if $g->left > $rightmost + 2;
+      my $bottom = $pos + $g->height;
+
+      my $collision = 0;
+      for my $old (@occupied) {
+	last if $old->right + 2 < $g->left;
+	next if $old->bottom < $pos;
+	next if $old->top > $bottom;
+	$collision = $old;
+	last;
+      }
+      last unless $collision;
       if ($bump_direction > 0) {
-	$pos += $previous->height + 2;                    # collision, so bump
+	$pos += $collision->height + 2;                    # collision, so bump
       } else {
 	$pos -= $g->height + 2;
       }
     }
 
-    $occupied{$pos} = $g;                           # remember where we are
     $g->move(0,$pos);
+    @occupied = sort { $b->right <=> $a->right } ($g,@occupied);
+    $rightmost = $g->right if $g->right > $rightmost;
   }
 }
 

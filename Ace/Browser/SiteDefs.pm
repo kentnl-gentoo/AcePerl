@@ -59,10 +59,10 @@ sub map_url {
 
   return unless my $code = $self->Url_mapper;
   my (@result,$url);
-  if (@result = $code->($display,$name,$class)) {
+  if (@result = $code->($display,"$name",$class)) {
     return @result;
   }
-  return unless @result = $self->getConfig('default')->Url_mapper->($display,$name,$class);
+  return unless @result = $self->getConfig('default')->Url_mapper->($display,"$name",$class);
   return unless $url = $self->display($result[0],'url');
   return ($url,$result[1]);
 }
@@ -92,7 +92,13 @@ sub displays {
   return keys %$d unless defined $_[0];
   my $type = ucfirst(lc($_[0]));
   return  unless exists $d->{$type};
-  return wantarray ? @{$d->{$type}} : $d->{$type};
+  my $value = $d->{$type};
+  if (ref $value eq 'CODE') { # oh, wow, a subroutine
+    my @v = $value->();  # invoke to get list of displays
+    return wantarray ? @v : \@v;
+  } else {
+    return  wantarray ? @{$value} : $value;
+  }
 }
 
 sub class2displays {
@@ -153,6 +159,7 @@ sub resolvePath {
   if (exists $ENV{MOD_PERL}) {
     my $r    = Apache->request;
     if (my $root = $r->dir_config('AceBrowserRoot')) {
+      $file ||= '';
       return $CACHED{$file,$r->filename} if exists $CACHED{$file,$r->filename};
       return $CACHED{$file,$r->filename} = "$root/$file";
     }

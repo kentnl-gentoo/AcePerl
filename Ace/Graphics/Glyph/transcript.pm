@@ -24,7 +24,7 @@ sub calculate_right {
   $val = $left + ARROW if $left + ARROW > $val;
 
   if ($self->option('label') && (my $description = $self->description)) {
-    my $description_width = $self->font->width * length $self->description;
+    my $description_width = $self->font->width * length $description;
     $val = $left + $description_width if $left + $description_width > $val;
   }
   $val;
@@ -37,6 +37,27 @@ sub calculate_height {
   my $val = $self->SUPER::calculate_height(@_);
   $val += $self->labelheight if $self->option('label') && $self->description;
   $val;
+}
+
+# override filled_box method
+sub filled_box {
+  my $self = shift;
+  my $gd = shift;
+  my ($x1,$y1,$x2,$y2,$color) = @_;
+
+  my $linewidth = $self->option('linewidth') || 1;
+  $color ||= $self->fillcolor;
+  $gd->filledRectangle($x1,$y1,$x2,$y2,$color);
+  $gd->rectangle($x1,$y1,$x2,$y2,$self->fgcolor);
+
+  # if the left end is off the end, then cover over
+  # the leftmost line
+  my ($width) = $gd->getBounds;
+  $gd->line($x1,$y1,$x1,$y2,$color)
+    if $x1 < 0;
+
+  $gd->line($x2,$y1,$x2,$y2,$color)
+    if $x2 > $width;
 }
 
 # override draw method
@@ -53,6 +74,11 @@ sub draw {
 
   my $implied_intron_color = $self->option('implied_intron_color') || IMPLIED_INTRON_COLOR;
   my $gray = $self->factory->translate($implied_intron_color);
+  my $fg     = $self->fgcolor;
+  my $fill   = $self->fillcolor;
+  my $fontcolor = $self->fontcolor;
+  my $curated_exon   = $self->option('curatedexon')   ? $self->color('curatedexon') : $fill;
+  my $curated_intron = $self->option('curatedintron') ? $self->color('curatedintron') : $fg;
 
   my @exons   = sort {$a->start<=>$b->start} $self->feature->segments;
   my @introns = $self->feature->introns if $self->feature->can('introns');
@@ -60,21 +86,24 @@ sub draw {
   # fill in missing introns
   my (%istart,@intron_boxes,@implied_introns,@exon_boxes);
   foreach (@introns) {
-    my ($start,$stop) = ($_->start,$_->stop);
+    my ($start,$stop) = ($_->start,$_->end);
     ($start,$stop) = ($stop,$start) if $start > $stop;
     $istart{$start}++;
-    push @intron_boxes,[$left+$self->map_pt($start),$left+$self->map_pt($stop)];
+    my $color = $_->source_tag eq 'curated' ? $curated_intron : $fg;
+    push @intron_boxes,[$left+$self->map_pt($start),$left+$self->map_pt($stop),$color];
   }
 
   for (my $i=0; $i < @exons; $i++) {
-    my ($start,$stop) = ($exons[$i]->start,$exons[$i]->stop);
+    my ($start,$stop) = ($exons[$i]->start,$exons[$i]->end);
     ($start,$stop) = ($stop,$start) if $start > $stop;
-    push @exon_boxes,[$left+$self->map_pt($start),my $stop_pos = $left + $self->map_pt($stop)];
+    my $color = $exons[$i]->source_tag eq 'curated' ? $curated_exon : $fill;
+
+    push @exon_boxes,[$left+$self->map_pt($start),my $stop_pos = $left + $self->map_pt($stop),$color];
 
     next unless my $next_exon = $exons[$i+1];
 
-    my $next_start = $next_exon->start < $next_exon->stop ?
-      $next_exon->start : $next_exon->stop;
+    my $next_start = $next_exon->start < $next_exon->end ?
+      $next_exon->start : $next_exon->end;
 
     my $next_start_pos = $left + $self->map_pt($next_start);
     # fudge boxes that are within two pixels of each other
@@ -82,40 +111,35 @@ sub draw {
       $exon_boxes[-1][1] = $next_start_pos;
 
     } elsif ($next_exon && !$istart{$stop+1}) {
-      push @implied_introns,[$stop_pos,$next_start_pos];
+      push @implied_introns,[$stop_pos,$next_start_pos,$gray];
     }
 }
 
-  my $fg     = $self->fgcolor;
-  my $fill   = $self->fillcolor;
   my $center  = ($y1 + $y2)/2;
   my $quarter = $y1 + ($y2-$y1)/4;
 
   # each intron becomes an angly thing
-  foreach ([\@intron_boxes,$fg],[\@implied_introns,$gray]) {
-    my ($i,$color) = @$_;
+  for my $i (@intron_boxes,@implied_introns) {
 
-    for my $i (@$i) {
-      if ($i->[1] - $i->[0] > 3) {  # room for the inverted "V"
-	my $middle = $i->[0] + ($i->[1] - $i->[0])/2;
-	$gd->line($i->[0],$center,$middle,$y1,$color);
-	$gd->line($middle,$y1,$i->[1],$center,$color);
-      } elsif ($i->[1]-$i->[0] > 1) { # no room, just connect
-	$gd->line($i->[0],$quarter,$i->[1],$quarter,$color);
-      }
+    if ($i->[1] - $i->[0] > 3) {  # room for the inverted "V"
+      my $middle = $i->[0] + ($i->[1] - $i->[0])/2;
+      $gd->line($i->[0],$center,$middle,$y1,$i->[2]);
+      $gd->line($middle,$y1,$i->[1],$center,$i->[2]);
+    } elsif ($i->[1]-$i->[0] > 1) { # no room, just connect
+      $gd->line($i->[0],$quarter,$i->[1],$quarter,$i->[2]);
     }
   }
 
   # each exon becomes a box
   for my $e (@exon_boxes) {
     my @rect = ($e->[0],$y1,$e->[1],$y2);
-    $self->filled_box($gd,@rect);
+    $self->filled_box($gd,@rect,$e->[2]);
   }
 
   my $draw_arrow = $self->option('draw_arrow');
   $draw_arrow = 1 unless defined $draw_arrow;
 
-  if ($draw_arrow) {
+  if ($draw_arrow && @exon_boxes) {
     # draw little arrows to indicate direction of transcription
     # plus strand is to the right
     my $a2 = ARROW/2;
@@ -138,7 +162,7 @@ sub draw {
 
     # draw description
     if (my $d = $self->description) {
-      $gd->string($self->font,$x1,$y2,$d,$fill);
+      $gd->string($self->font,$x1,$y2,$d,$fontcolor);
     }
   }
 

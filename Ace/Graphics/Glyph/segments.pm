@@ -4,9 +4,11 @@ package Ace::Graphics::Glyph::segments;
 
 use strict;
 use vars '@ISA';
+use GD;
 @ISA = 'Ace::Graphics::Glyph';
 
 use constant GRAY  => 'lightgrey';
+my %BRUSHES;
 
 # override right to allow for label
 sub calculate_right {
@@ -51,19 +53,30 @@ sub draw {
   my $gray = $self->color(GRAY);
 
   my (@boxes,@skips);
+  my $stranded = $self->option('stranded');
 
   for (my $i=0; $i < @segments; $i++) {
     my ($start,$stop) = ($left + $self->map_pt($segments[$i]->start),
-			 $left + $self->map_pt($segments[$i]->stop));
+			 $left + $self->map_pt($segments[$i]->end));
+
+    my $strand = 0;
+    my $target;
+
+    if ($stranded
+	&& $segments[$i]->can('target') 
+	&& ($target = $segments[$i]->target) 
+	&& $target->can('start')) {
+      $strand = $target->start < $target->end ? 1 : -1;
+    }
 
     # probably unnecessary, but we do it out of paranaoia
     ($start,$stop) = ($stop,$start) if $start > $stop;
 
-    push @boxes,[$start,$stop];
+    push @boxes,[$start,$stop,$strand];
 
     if (my $next_segment = $segments[$i+1]) {
       my ($next_start,$next_stop) = ($left + $self->map_pt($next_segment->start),
-				     $left + $self->map_pt($next_segment->stop));
+				     $left + $self->map_pt($next_segment->end));
       # probably unnecessary, but we do it out of paranaoia
       ($next_start,$next_stop) = ($next_stop,$next_start) if $next_start > $next_stop;
 
@@ -82,7 +95,12 @@ sub draw {
   # each segment becomes a box
   for my $e (@boxes) {
     my @rect = ($e->[0],$y1,$e->[1],$y2);
-    $self->filled_box($gd,@rect);
+    if ($e->[2] == 0 || !$stranded) {
+      $self->filled_box($gd,@rect);
+    } else {
+#      $self->filled_arrow($gd,1,@rect);
+      $self->oriented_box($gd,$e->[2],@rect);
+    }
   }
 
   # each skip becomes a simple line
@@ -94,6 +112,76 @@ sub draw {
   # draw label
   $self->draw_label($gd,@_) if $self->option('label');
 }
+
+sub oriented_box {
+  my $self = shift;
+  my $gd  = shift;
+  my $orientation = shift;
+  my ($x1,$y1,$x2,$y2) = @_;
+  $self->filled_box($gd,@_);
+  return unless $x2 - $x1 >= 4;
+  $BRUSHES{$orientation} ||= $self->make_brush($orientation);
+  my $top = int(1.5 + $y1 + ($y2 - $y1 - ($BRUSHES{$orientation}->getBounds)[1])/2);
+  $gd->setBrush($BRUSHES{$orientation});
+  $gd->setStyle(0,0,0,1);
+  $gd->line($x1+2,$top,$x2-2,$top,gdStyledBrushed);
+}
+
+sub make_brush {
+  my $self = shift;
+  my $orientation = shift;
+
+  my $brush   = GD::Image->new(3,3);
+  my $bgcolor = $brush->colorAllocate(255,255,255); #white
+  $brush->transparent($bgcolor);
+  my $fgcolor   = $brush->colorAllocate($self->factory->panel->rgb($self->fgcolor));
+  if ($orientation > 0) {
+    $brush->setPixel(0,0,$fgcolor);
+    $brush->setPixel(1,1,$fgcolor);
+    $brush->setPixel(0,2,$fgcolor);
+  } else {
+    $brush->setPixel(1,0,$fgcolor);
+    $brush->setPixel(0,1,$fgcolor);
+    $brush->setPixel(1,2,$fgcolor);
+  }
+  $brush;
+}
+
+sub filled_arrow {
+  my $self = shift;
+  my $gd  = shift;
+  my $orientation = shift;
+
+  my ($x1,$y1,$x2,$y2) = @_;
+  my ($width) = $gd->getBounds;
+  my $indent = ($y2-$y1)/2;
+
+  return $self->filled_box($gd,@_)
+    if ($orientation == 0)
+      or ($x1 < 0 && $orientation < 0)
+	or ($x2 > $width && $orientation > 0)
+	  or ($x2 - $x1 < $indent);
+
+  my $fg = $self->fgcolor;
+  if ($orientation > 0) {
+    $gd->line($x1,$y1,$x2-$indent,$y1,$fg);
+    $gd->line($x2-$indent,$y1,$x2,($y2+$y1)/2,$fg);
+    $gd->line($x2,($y2+$y1)/2,$x2-$indent,$y2,$fg);
+    $gd->line($x2-$indent,$y2,$x1,$y2,$fg);
+    $gd->line($x1,$y2,$x1,$y1,$fg);
+    $gd->line($x2,$y1,$x2,$y2,$fg);
+    $gd->fill($x1+1,($y1+$y2)/2,$self->fillcolor);
+  } else {
+    $gd->line($x1,($y2+$y1)/2,$x1+$indent,$y1,$fg);
+    $gd->line($x1+$indent,$y1,$x2,$y1,$fg);
+    $gd->line($x2,$y1,$x2,$y2,$fg);
+    $gd->line($x2,$y2,$x1+$indent,$y2,$fg);
+    $gd->line($x1+$indent,$y2,$x1,($y1+$y2)/2,$fg);
+    $gd->line($x1,$y1,$x1,$y2,$fg);
+    $gd->fill($x2-1,($y1+$y2)/2,$self->fillcolor);
+  }
+}
+
 
 sub description {
   my $self = shift;
@@ -125,7 +213,11 @@ AcePerl/Das-style segments() or merged_segments() methods.
 
 =head2 OPTIONS
 
-Only the common options are recognized. There are no glyph-specific options.
+In addition to the common options, this glyph recognizes the
+b<-stranded> argument.  If b<-stranded> is true and the feature is an
+alignment (has the target() method) then the glyph will draw little
+arrows in the segment boxes to indicate the direction of the
+alignment.
 
 =head1 BUGS
 

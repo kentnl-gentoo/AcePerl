@@ -9,7 +9,7 @@ sub bottom {
   my $self = shift;
   my $val = $self->SUPER::bottom(@_);
   $val += $self->font->height if $self->option('tick');
-  $val += $self->labelheight if $self->option('label');
+  $val += $self->labelheight  if $self->option('label');
   $val;
 }
 
@@ -109,12 +109,13 @@ sub draw_parallel {
       my $tickpos = $left + $self->map_pt($i);
       $gd->line($tickpos,$center-$a2,$tickpos,$center+$a2,$fg);
       my $middle = $tickpos - (length($i) * $width)/2;
-      $gd->string($font,$middle,$center+$a2-1,$i,$font_color);
+      $gd->string($font,$middle,$center+$a2-1,$i,$font_color)
+	if $middle > 0 && $middle < $self->factory->panel->width-($font->width * length $i);
     }
 
     if ($self->option('tick') >= 2) {
       my $a4 = $self->SUPER::height/4;
-      for (my $i = $self->start+$interval/10; $i < $self->end; $i += $interval/10) {
+      for (my $i = $first_tick - $interval; $i < $self->end; $i += $interval/10) {
 	my $tickpos = $left + $self->map_pt($i);
 	$gd->line($tickpos,$center-$a4,$tickpos,$center+$a4,$fg);
       }

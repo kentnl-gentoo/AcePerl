@@ -23,6 +23,12 @@ use overload
 *stop = \&end;
 *abs = \&absolute;
 *source_seq = \&source;
+*source_tag = \&subtype;
+*primary_tag = \&type;
+
+my %plusminus = (	 '+' => '-',
+		 '-' => '+',
+		 '.' => '.');
 
 # internal keys
 #    parent    => reference Sequence in "+" strand
@@ -209,6 +215,8 @@ sub p_offset { $_[0]->{p_offset} }
 
 sub smapped { 1; }
 sub type    { 'Sequence' }
+sub subtype { }
+
 
 # return the database this sequence is associated with
 sub db {
@@ -236,7 +244,7 @@ sub end {
   my ($self,$abs) = @_;
   my $start = $self->start($abs);
   my $f = $self->{length} > 0 ? 1 : -1;  # for stupid 1-based adjustments
-  if ($abs) {
+  if ($abs && $self->refseq ne $self->parent) {
     my $r_strand = $self->r_strand;
     return $start - $self->{length} + $f 
       if $r_strand < 0 or $self->{strand} < 0 or $self->{length} < 0;
@@ -377,10 +385,10 @@ sub _make_transcripts {
   my %transcripts;
 
   for my $feature (@$features) {
-    my $transcript = $feature->info;
+    my $transcript = $feature->info or next;
     if ($feature->type =~ /^(exon|intron|cds)$/) {
       my $type = $1;
-      push @{$transcripts{$transcript}{$1}},$feature;
+      push @{$transcripts{$transcript}{$type}},$feature;
     } elsif ($feature->type eq 'Sequence') {
       $transcripts{$transcript}{base} ||= $feature;
     }
@@ -476,7 +484,6 @@ sub _make_alignments {
   return map {Ace::Sequence::GappedAlignment->new($homol{$_})} keys %homol;
 }
 
-
 # return list of features quickly
 sub feature_list {
   my $self = shift;
@@ -506,7 +513,8 @@ sub transformGFF {
     return;
   } else {  # strand eq '-'
     my $o = defined($ref_offset) ? (2 + $ref_offset) : (2 + $self->p_offset - $self->offset);
-    $$gff =~ s/(?<!\")\s+(-?\d+)\s+(-?\d+)\s+([.\d]+)\s+(\S)/join "\t",'',$o-$2,$o-$1,$3,$4 eq '+'? '-' : '+'/eg;    
+    $$gff =~ s/(?<!\")\s+(-?\d+)\s+(-?\d+)\s+([.\d]+)\s+(\S)/join "\t",'',$o-$2,$o-$1,$3,$plusminus{$4}/eg;
+    $$gff =~ s/(Target \"[^\"]+\" )(-?\d+) (-?\d+)/$1 $3 $2/g;
     $$gff =~ s/^$parent/$source/mg;
     $$gff =~ s/\#\#sequence-region\s+\S+\s+(-?\d+)\s+(-?\d+)/"##sequence-region $ref_source " . ($o - $2) . ' ' . ($o - $1) . ' (reversed)'/em;
     $$gff =~ s/FMAP_FEATURES\s+"\S+"\s+(-?\d+)\s+(-?\d+)/"FMAP_FEATURES \"$ref_source\" " . ($o - $2) . ' ' . ($o - $1) . ' (reversed)'/em;
@@ -588,6 +596,8 @@ sub _traverse {
 
   # invoke seqget to find the top-level container for this sequence
   my ($tl,$tl_start,$tl_end) = _get_toplevel($prev);
+  $tl_start ||= 0;
+  $tl_end ||= 0;
 
   # make it an object
   $tl = ref($obj)->new(-name=>$tl,-class=>'Sequence',-db=>$obj->db);
@@ -602,10 +612,11 @@ sub _traverse {
 sub _get_toplevel {
   my $seq = shift;
 
-  my $gff = $seq->db->raw_query("gif seqget $seq -coords 1 2 ; seqfeatures -version 2 -feature Sequence");
+  my $gff = $seq->db->raw_query("gif seqget $seq -coords 1 2 ; seqfeatures -version 2 -feature Sequence|structural");
   my $seq_strand = $gff =~ /^\#\#sequence-region.+\(reversed\)/m ? '-' : '+';
 
-  my ($tl,$tl_strand,$tl_start,$tl_end);
+  my ($tl,$tl_strand);
+  my ($tl_start,$tl_end) = (0,0);
   my $tl_length = 0;
   my $length    = 0;
 
@@ -621,6 +632,12 @@ sub _get_toplevel {
     }
   }
 
+  unless ($tl) {  # oops, not genomic, so it refers to itself
+    $tl = $seq;
+    $tl_length = $seq->DNA(2);
+    return ($tl,1,$tl_length);
+  }
+
   return ($tl,$tl_end,$tl_end - $length + 1)         if $seq_strand eq '-';
   return ($tl,2 - $tl_start,1 - $tl_start + $length) if $seq_strand eq '+';
 }
@@ -628,14 +645,15 @@ sub _get_toplevel {
 # create subroutine that filters GFF files for certain feature types
 sub _make_filter {
   my $self = shift;
+  my $automerge = $self->automerge;
 
   # parse out the filter
   my %filter;
   foreach (@_) {
     my ($type,$filter) = split(':',$_,2);
-    if (lc($type) eq 'transcript') {
+    if ($automerge && lc($type) eq 'transcript') {
       @filter{'exon','intron','Sequence','cds'} = ([undef],[undef],[undef],[undef]);
-    } elsif (lc($type) eq 'clone') {
+    } elsif ($automerge && lc($type) eq 'clone') {
       @filter{'Clone_left_end','Clone_right_end','Sequence'} = ([undef],[undef],[undef]);
     } else {
       push @{$filter{$type}},$filter;
@@ -714,7 +732,13 @@ sub _query {
   ($start,$end) = ($end,$start) if $start > $end;  #flippity floppity
 
   my $coord   = "-coords $start $end";
-  return $db->raw_query("gif seqget $parent $coord ; $command $coord");
+
+  # BAD BAD HACK ALERT - CHECKS THE QUERY THAT IS PASSED DOWN
+  # ALSO MAKES THINGS INCOMPATIBLE WITH PRIOR 4.9 servers.
+#  my $opt     = $command =~ /seqfeatures/ ? '-nodna' : '';
+  my $opt = '';
+
+  return $db->raw_query("gif seqget $parent $opt $coord ; $command $coord");
 }
 
 # utility function -- reverse complement
@@ -1224,42 +1248,3 @@ disclaimers of warranty.
 =cut
 
 __END__
-
-# fragments
-
-# get sequence, offset and strand of topmost container
-# sub _traverse {
-#   my $obj = shift;
-
-#   my ($offset,$length,$phase,$prev) = (0,0,1,undef);
-  
-#   for ( $prev=$obj, my $o=_get_parent($obj); $o; $prev=$o,$o=_get_parent($o) ) {
-#     my @subs = _get_children($o);
-#     my ($seq) = grep $prev eq $_,@subs;
-#     my ($start,$end) = $seq->row(1);
-#     $length ||= $end - $start + 1;
-#     $offset += $start-1;    # offset to beginning of sequence
-#     $phase  *= $start < $end ? +1 : -1;
-#   }
-  
-#   return ($prev,$offset,$phase < 0 ? (abs($length)+2,'-') : (abs($length),'+') ) if $length;
-
-#   # Traversal  will fail in the event that a top-level sequence
-#   # is requested (like a whole CHROMOSOME).  In this case, we try to
-#   # derive its size from its DNA first, and if that doesn't work, from its
-#   # map information
-#   $length ||= $obj->get(DNA=>2);
-#   return ($prev,0,$length,'+') if $length > 0;
-
-#   # now try to reassemble map information
-#   my @pieces = _get_children($obj);
-#   foreach (@pieces) {
-#       my ($start,$end) = $_->row(1);
-#       $length = $start if $length < $start;
-#       $length = $end   if $length < $end;
-#     }
-#   $offset = 0;
-#   $prev   = $obj;
-#   return ($obj,0,abs($length),'+');
-# }
-

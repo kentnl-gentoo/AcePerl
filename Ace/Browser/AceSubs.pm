@@ -46,10 +46,10 @@ sub Footer {
   my $name = Configuration->Name;
 
   # set up the feedback link
-  my $feedback_link = Configuration->Feedback_recipients && 
-      $obj_name && 
+  my $feedback_link = Configuration->Feedback_recipients &&
+      $obj_name &&
 	  (url(-relative=>1) ne 'feedback') ?
-    a({-href=>ResolveUrl("misc/feedback/$name","name=$obj_name&class=$obj_class&referer=$referer")},
+    a({-href=>ResolveUrl("misc/feedback/$name","name=$obj_name;class=$obj_class;referer=$referer")},
       "Click here to send data or comments to the maintainers")
       : '';
 
@@ -96,7 +96,9 @@ sub Style {
 sub AceInit   {
   $HEADER = 0;
 
-  %OPEN = map {$_ => 1} split(' ',param('open')) if param('open');
+  # keeps track of what sections should be open
+  %OPEN = param('open') ? map {$_ => 1} split(' ',param('open')) : () ;
+
   return 1 if Configuration();
 
   # if we get here, it is a big NOT FOUND error
@@ -203,7 +205,7 @@ sub AceMultipleChoices {
       p("Automatically transforming this query into a request for corresponding object",
 	     a({-href => Object2URL($objects->[0])},$objects->[0]->class.':',$objects->[0])),
       p("Please wait..."),
-      FOOTER(),
+      Footer(),
       end_html();
     return;
   }
@@ -253,7 +255,8 @@ sub getDatabasePorts {
 
 sub ResolveUrl {
     my ($url,$param) = @_;
-    my ($main,$query,$frag) = $url =~ /^([^?\#]+)\??([^\#]*)\#?(.*)$/;
+    my ($main,$query,$frag) = $url =~ /^([^?\#]+)\??([^\#]*)\#?(.*)$/ if defined $url;
+    $main ||= '';
 
     # search is relative to the Ace::Browser::SiteDefs.pm file
     $main = Ace::Browser::SiteDefs->resolvePath($main) unless $main =~ m!^/!;
@@ -263,7 +266,7 @@ sub ResolveUrl {
 
     $main .= "?$query" if $query; # put the query string back
     $main .= "?$param" if $param and !$query;
-    $main .= "&$param" if $param and  $query;
+    $main .= ";$param" if $param and  $query;
     $main .= "#$frag" if $frag;
     return $main;
 }
@@ -273,7 +276,7 @@ sub Object2URL {
     my ($object,$extra) = @_;
     my ($name,$class);
     if (ref($object)) {
-	($name,$class) = ($object->name,$object->class);
+	($name,$class) = ($object,$object->class);
     } else {
 	($name,$class) = ($object,$extra);
     }
@@ -330,7 +333,7 @@ sub get_symbolic {
   if (exists $ENV{MOD_PERL}) {  # the easy way
     if (my $r = Apache->request) {
       if (my $conf = $r->dir_config('AceBrowserConf')) {
-	my ($name) = $conf =~ m!([^/]+)\.pm$!;
+	my ($name) = $conf =~ m!([^/]+)\.(?:pm|conf)$!;
 	return $name if $name;
       }
     }
@@ -367,6 +370,7 @@ sub TypeSelector {
     my $search_bookmark = '';
     if (my $last_search_script   = cookie("ACEDB_$db")) {
       my $query_string = cookie("SEARCH_${db}_${last_search_script}");
+      $query_string .= ";again=1" if $query_string;
       $search_bookmark = "$last_search_script";
       $search_bookmark .= "?$query_string" if $query_string;
     }
@@ -411,7 +415,7 @@ sub TypeSelector {
     foreach (@displays,@basic_displays) {
  	my ($url,$icon,$label) = @{$_}{qw/url icon label/};
 	next unless $url;
-	my $u = ResolveUrl($url,"name=$n&class=$c");
+	my $u = ResolveUrl($url,"name=$n;class=$c");
 	$url =~ s/\#.*$//;
 
 	my $active = $url =~ /^$display/;
@@ -426,7 +430,8 @@ sub TypeSelector {
 	}
 	  push (@rows,td({-align=>'CENTER',-class=>'small'},$cell));
 	}
-    return table(TR({-valign=>'bottom'},@rows));
+    return table({-width=>'100%',-border=>0,-class=>'searchtitle'},
+		 TR({-valign=>'bottom'},@rows));
 }
 
 
