@@ -17,7 +17,7 @@ use overload
 
 # Optional exports
 @EXPORT_OK = qw(rearrange ACE_PARSE);
-$VERSION = '1.86';
+$VERSION = '1.87';
 
 use constant STATUS_WAITING => 0;
 use constant STATUS_PENDING => 1;
@@ -176,9 +176,10 @@ sub db {
 sub model {
   my $self = shift;
   require Ace::Model;
-  my $model = shift;
+  my $model       = shift;
+  my $break_cycle = shift;  # for breaking cycles when following #includes
   return $self->{'models'}{$model} ||= 
-    Ace::Model->new($self->raw_query("model \"$model\""));
+    Ace::Model->new($self->raw_query("model \"$model\""),$self,$break_cycle);
 }
 	   
 # Fetch one or a group of objects from the database
