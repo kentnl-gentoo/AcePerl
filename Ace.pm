@@ -2,7 +2,7 @@ package Ace;
 
 use strict;
 use Carp 'croak';
-use vars qw($VERSION @ISA @EXPORT @EXPORT_OK);
+use vars qw($VERSION @ISA @EXPORT @EXPORT_OK $Error);
 
 require Exporter;
 require AutoLoader;
@@ -15,71 +15,64 @@ use overload '""' => 'asString';
 
 # Optional exports
 @EXPORT_OK = qw(rearrange ACE_PARSE);
-$VERSION = '1.64';
+$VERSION = '1.67';
 
 use constant STATUS_WAITING => 0;
 use constant STATUS_PENDING => 1;
 use constant STATUS_ERROR   => -1;
 use constant ACE_PARSE      => 3;
 
+use constant DEFAULT_PORT   => 200005;  # rpc server
+use constant DEFAULT_SOCKET => 2005;    # socket server
+
 require Ace::Object;
 require Ace::Iterator;
 eval qq{use Ace::Freesubs};  # XS file, may not be available
 
 # Preloaded methods go here.
-$Ace::Error = '';
+$Error = '';
 
 # Pseudonyms and deprecated methods.
 *list      = \&fetch;
-*find_many = \&fetch_many;
-*models    = \&classes;
-*Ace::ERR  = *Ace::Error;
+*Ace::ERR  = *Error;
+
+# now completely deprecated and gone
+# *find_many = \&fetch_many;
+# *models    = \&classes;
 
 sub connect {
   my $class = shift;
   my ($host,$port,$user,$pass,$path,$program,
       $objclass,$timeout,$query_timeout,$database,
-      $server_type);
+      $server_type,$url,$u,$p);
 
   # one-argument single "URL" form
-  if (@_ == 1) {  # look for host:port
-    $_ = $_[0];
-    if (m!^rpcace://([^:]+):(\d+)$!) {  # rpcace://localhost:200005
-      ($host,$port) = ($1,$2);
-      $server_type = 'Ace::RPC';
-    } elsif (m!^sace://([^:]+):(\d+)$!) { # sace://localhost:2005
-      ($host,$port) = ($1,$2);
-      $server_type = 'Ace::SocketServer';
-    } elsif (m!^tace:(/.+)$!) {           # tace:/path/to/database
-      $path = $1;
-      $server_type = 'Ace::Local';
-    } elsif (m!^(/.+)$!) {                # /path/to/database
-      $path = $1;
-      $server_type = 'Ace::Local';
-    } else {
-      croak "Usage:  Ace->connect(-host=>\$host,-port=>\$port [,-path=>\$path]\n";
-    }
+  if (@_ == 1) {
+    return $class->connect(-url=>shift);
   }
-  
+
   # multi-argument (traditional) form
-  else {       
-    ($host,$port,$user,$pass,
-     $path,$program,$objclass,$timeout,$query_timeout) = 
-       rearrange(['HOST','PORT','USER','PASS',
-		  'PATH','PROGRAM','CLASS','TIMEOUT',
-		  'QUERY_TIMEOUT'],@_);
-    if ($path) { # local database
-      $server_type = 'Ace::Local';
-    } else { # either RPC or socket server
-      $host      ||= 'localhost';
-      $port      ||= defined(&ACE_PORT) ? &ACE_PORT : 200001;
-      $user      ||= '';
-      $pass      ||= '';
-      $query_timeout ||= 120;
-      $timeout = 25 unless defined $timeout;
-      $server_type = 'Ace::SocketServer' if $port <  100000;
-      $server_type = 'Ace::RPC'          if $port >= 100000;
-    }
+  ($host,$port,$user,$pass,
+   $path,$program,$objclass,$timeout,$query_timeout,$url) = 
+     rearrange(['HOST','PORT','USER','PASS',
+		'PATH','PROGRAM','CLASS','TIMEOUT',
+		'QUERY_TIMEOUT','URL'],@_);
+
+  ($host,$port,$u,$p,$server_type) = $class->process_url($url) 
+    or croak "Usage:  Ace->connect(-host=>\$host,-port=>\$port [,-path=>\$path]\n"
+      if defined $url;
+  
+  if ($path) { # local database
+    $server_type = 'Ace::Local';
+  } else { # either RPC or socket server
+    $host      ||= 'localhost';
+    $user      ||= $u || '';
+    $pass      ||= $p || '';
+    $port        ||= $server_type eq 'Ace::SocketServer' ? DEFAULT_SOCKET : DEFAULT_PORT;
+    $query_timeout ||= 120;
+    $timeout = 25 unless defined $timeout;
+    $server_type ||= 'Ace::SocketServer' if $port <  100000;
+    $server_type ||= 'Ace::RPC'          if $port >= 100000;
   }
   
   # we've normalized parameters, so do the actual connect
@@ -102,6 +95,37 @@ sub connect {
 		    'auto_save' => 0,
 		   },$class;
   return $self;
+}
+
+sub process_url {
+  my $class = shift;
+  my $url = shift;
+  my ($host,$port,$user,$path,$server_type) = ('','','','','');
+
+  if ($url) {  # look for host:port
+    $_ = $url;
+    if (m!^rpcace://([^:]+):(\d+)$!) {  # rpcace://localhost:200005
+      ($host,$port) = ($1,$2);
+      $server_type = 'Ace::RPC';
+    } elsif (m!^sace://(\w+)\@([^:]+):(\d+)$!) { # sace://user@localhost:2005
+      ($user,$host,$port) = ($1,$2,$3);
+      $server_type = 'Ace::SocketServer';
+    } elsif (m!^sace://([^:]+):(\d+)$!) { # sace://localhost:2005
+      ($host,$port) = ($1,$2);
+      $server_type = 'Ace::SocketServer';
+    } elsif (m!^tace:(/.+)$!) {           # tace:/path/to/database
+      $path = $1;
+      $server_type = 'Ace::Local';
+    } elsif (m!^(/.+)$!) {                # /path/to/database
+      $path = $1;
+      $server_type = 'Ace::Local';
+    } else {
+      return;
+    }
+  }
+
+  return ($host,$port,$user,$path,$server_type);  
+
 }
 
 # Return the low-level Ace::AceDB object
@@ -204,17 +228,17 @@ sub read_object {
     while ($self->{database}->status == STATUS_PENDING()) {
       my $data = $self->{database}->read();
 #      $data =~ s/\0//g;  # get rid of nulls in the buffer
-      $result .= $data;
+      $result .= $data if defined $data;
     }
     return $result;
 }
 
 # do a query, and return the result immediately
 sub raw_query {
-    my ($self,$query,$parse) = @_;
-    $self->{database}->query($query, $parse ? ACE_PARSE() : () );
-    $self->_alert_iterators;
-    return $self->read_object;
+  my ($self,$query,$no_alert,$parse) = @_;
+  $self->_alert_iterators unless $no_alert;
+  $self->{database}->query($query, $parse ? ACE_PARSE : () );
+  return $self->read_object;
 }
 
 # return the last error
@@ -228,8 +252,7 @@ sub error {
 # close the database
 sub close {
   my $self = shift;
-  $self->raw_query('save')
-    if $self->auto_save;
+  $self->raw_query('save') if $self->auto_save;
   foreach (keys %{$self->{iterators}}) {
     $self->_unregister_iterator($_);
   }
@@ -342,10 +365,10 @@ sub _fetch_chunk {
 
 sub _alert_iterators {
   my $self = shift;
-  foreach (keys %{$self->{'iterators'}}) {
-    $self->{'iterators'}->{$_}->_invalidate;
+  foreach (keys %{$self->{iterators}}) {
+    $self->{iterators}{$_}->invalidate;
   }
-  undef $self->{'active_list'};
+  undef $self->{active_list};
 }
 
 sub asString {
@@ -355,7 +378,6 @@ sub asString {
   return "$server://$self->{host}:$self->{port}" if $self->{'host'};
   return ref $self;
 }
-
 
 1;
 
@@ -435,7 +457,9 @@ databases and I<Ace::AceDB> for access to remote databases.
 Ordinarily you will not need to interact directly with either of these
 classes.
 
-=head1 CREATING NEW DATABASE CONNECTIONS: connect()
+=head1 CREATING NEW DATABASE CONNECTIONS
+
+=head2 connect() -- multiple argument form
 
     # remote database
     $db = Ace->connect(-host  =>  'beta.crbm.cnrs-mop.fr',
@@ -460,8 +484,7 @@ full syntax is as follows:
 		       -query_timeout => $query_timeout);
 
 The connect() method uses a named argument calling style, and
-recognizes the arguments B<-host>, B<-port>, B<-path>, B<-program>,
-B<-class>, B<-timeout> and B<-query_timeout>.
+recognizes the following arguments:
 
 =over 4
 
@@ -477,6 +500,15 @@ argument.
 This argument indicates the path of an AceDB directory on the local
 system.  It should point to the directory that contains the I<wspec>
 subdirectory.  User name interpolations (~acedb) are OK.
+
+=item B<-user>
+
+Name of user to log in as (when using socket server B<only>).  If not
+provided, will attempt an anonymous login.
+
+=item B<-pass>
+
+Password to log in with (when using socket server).
 
 =item B<-program>
 
@@ -529,7 +561,7 @@ be changed once set.
 If arguments are omitted, they will default to the following values:
 
     -host          localhost
-    -port          23456
+    -port          200005;
     -path          no default
     -program       tace
     -class         Ace::Object
@@ -558,6 +590,50 @@ db().  This fetches an Ace::AceDB object.  See THE LOW LEVEL C API for
 details on using this object.
  
     $low_level = $db->db();
+
+=head2 connect() -- single argument form
+
+  $db = Ace->connect('sace://stein.cshl.org:1880')
+
+Ace->connect() also accepts a single argument form using a URL-type
+syntax.  The general syntax is:
+
+   protocol://hostname:port/path
+
+The I<:port> and I</path> parts are protocol-dependent as described
+above.
+
+Protocols:
+
+=over 4
+
+=item sace://hostname:port
+
+Connect to a socket server at the indicated hostname and port.  Example:
+
+   sace://stein.cshl.org:1880
+
+If not provided, the port defaults to 2005.
+
+=item rpcace://hostname:port
+
+Connect to an RPC server at the indicated hostname and RPC service number.  Example:
+
+  rpcace://stein.cshl.org:400000
+
+If not provided, the port defaults to 200005
+
+=item tace:/path/to/database
+
+Open up the local database at F</path/to/database> using tace.  Example:
+
+  tace:/~acedb/elegans
+
+=item /path/to/database
+
+Same as the previous.
+
+=back
 
 =head2 close() Method
 
@@ -1271,17 +1347,6 @@ sub layout {
   $result;
 }
 
-# Return a list of all the classes known to the server.
-sub classes {
-  my ($self,$invisible) = @_;
-  my $query = defined($invisible) && $invisible ?
-    "query find class !buried" 
-      :
-    "query find class visible AND !buried";
-  $self->_query($query);
-  return $self->_list;
-}
-
 # Return a hash of all the classes and the number of objects in each
 sub class_count {
   my $self = shift;
@@ -1388,25 +1453,6 @@ sub grep {
   return $filled ? $self->_fetch($count,$offset) : $self->_list($count,$offset);
 }
 
-# Fetch many objects in iterative style
-sub fetch_many {
-  my $self = shift;
-  my ($class,$pattern,$filled,$query,$chunksize) = rearrange( ['CLASS',
-							       ['PATTERN','NAME'],
-							       ['FILL','FILLED'],
-							       'QUERY',
-							       'CHUNKSIZE'],@_);
-  $pattern ||= '*';
-  $pattern = Ace->freeprotect($pattern);
-  if (defined $query) {
-    $query = "query $query" unless $query=~/^query\s/;
-  } else {
-    $query = qq{query find $class $pattern};
-  }
-  my $iterator = Ace::Iterator->new($self,$query,$filled,$chunksize);
-  return $iterator;
-}
-
 sub pick {
     my ($self,$class,$item) = @_;
     $Ace::Error = '';
@@ -1428,15 +1474,6 @@ sub pick {
     return $result[0];
 }
 
-sub _register_iterator {
-  my ($self,$iterator) = @_;
-  $self->{'iterators'}->{$iterator} = $iterator;
-}
-
-sub _unregister_iterator {
-  my ($self,$iterator) = @_;
-  delete $self->{'iterators'}->{$iterator};
-}
 
 # these two only get loaded if the Ace::Freesubs .XS isn't compiled
 sub freeprotect {
@@ -1445,7 +1482,7 @@ sub freeprotect {
   $text =~ s/\n/\\n/g;
   $text =~ s/\t/\\t/g;
   $text =~ s/"/\\"/g;
-  return '"$text"';
+  return qq("$text");
 }
 
 sub split {
@@ -1459,3 +1496,107 @@ sub split {
   return ($class,$id) unless $ts;
   return ($class,$id,$ts);  # return timestamp
 }
+
+# Return a list of all the classes known to the server.
+sub classes {
+  my ($self,$invisible) = @_;
+  my $query = defined($invisible) && $invisible ?
+    "query find class !buried" 
+      :
+    "query find class visible AND !buried";
+  $self->raw_query($query);
+  return $self->_list;
+}
+
+################## iterators ##################
+# Fetch many objects in iterative style
+sub fetch_many {
+  my $self = shift;
+  my ($class,$pattern,$filled,$query,$chunksize) = rearrange( ['CLASS',
+							       ['PATTERN','NAME'],
+							       ['FILL','FILLED'],
+							       'QUERY',
+							       'CHUNKSIZE'],@_);
+  $pattern ||= '*';
+  $pattern = Ace->freeprotect($pattern);
+  if (defined $query) {
+    $query = "query $query" unless $query=~/^query\s/;
+  } else {
+    $query = qq{query find $class $pattern};
+  }
+  my $iterator = Ace::Iterator->new($self,$query,$filled,$chunksize);
+  return $iterator;
+}
+
+sub _register_iterator {
+  my ($self,$iterator) = @_;
+  $self->{iterators}{$iterator} = $iterator;
+}
+
+sub _unregister_iterator {
+  my ($self,$iterator) = @_;
+  $self->_restore_iterator($iterator);
+  delete $self->{iterators}{$iterator};
+}
+
+sub _save_iterator {
+  my $self = shift;
+  my $iterator = shift;
+  return unless $self->{iterators}{$iterator};
+  $self->{iterator_stack} ||= [];
+  return 1 if grep { $_ eq $iterator } @{$self->{iterator_stack}};
+  $self->raw_query("spush",'no_alert');
+  unshift @{$self->{iterator_stack}},$iterator;
+  1;  # result code -- CHANGE THIS LATER
+}
+
+# horrid method that keeps the database's view of
+# iterators in synch with our view
+sub _restore_iterator {
+  my $self = shift;
+  my $iterator = shift;
+
+  # no such iterator known, return false
+  return unless $self->{iterators}{$iterator};
+
+  # make other iterators save themselves
+  $self->_alert_iterators;
+
+  # fetch the list of iterators stored on the stack
+  my $list = $self->{iterator_stack};
+  # spick not supported. Abandon ship
+  return if @$list > 1 and $self->{no_spick};
+
+  # Find the iterator in our list. This mirrors the
+  # position in the server stack
+  my $i;
+  for ($i=0; $i<@$list; $i++) {
+    last if $list->[$i] eq $iterator;
+  }
+  return unless $i < @$list;
+
+  # Sse spop if the list size is 1.  Otherwise use spick, which is
+  # only supported in hacked versions of the server.
+  my $result = $i == 0 ? $self->raw_query("spop",'no_alert') 
+                       : $self->raw_query("spick $i",'no_alert');
+  
+  if ($result =~ /Keyword spick does not match/) {
+    # _restore_iterator will now only work for a single iterator (non-reentrantly)
+    $self->{no_spick}++;
+    $self->raw_query('spop','no_alert') foreach @$list;  # empty database stack
+    $self->{iterator_stack} = [];             # and local copy
+    return;
+  }
+
+  unless (($result =~ /The stack now holds (\d+) keyset/ && ($1 == (@$list-1) ))
+	  or 
+	  ($result =~ /stack is (now )?empty/ && @$list == 1)
+	 ) {
+    $Ace::Error = 'Unexpected result from spick: $result';
+    return;
+  }
+
+  splice(@$list,$i,1);   # remove from position
+  return 1;
+}
+

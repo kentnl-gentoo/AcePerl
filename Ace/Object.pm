@@ -2,7 +2,7 @@ package Ace::Object;
 use strict;
 use Carp;
 
-# $Id: Object.pm,v 1.23 2000/07/14 20:24:57 lstein Exp $
+# $Id: Object.pm,v 1.25 2000/09/05 13:50:58 lstein Exp $
 
 use overload 
     '""'       => 'name',
@@ -1875,15 +1875,14 @@ sub commit {
   $name =~ s/([^a-zA-Z0-9_-])/\\$1/g;
   return 1 unless exists $self->{'.update'} && $self->{'.update'};
 
-  
-  $Ace::Error = undef;
+  $Ace::Error = '';
   my $result = '';
   
   # bad design alert: the following breaks encapsulation
   if ($db->{database}->can('write')) { # new way for socket server
     my $cmd = join "\n","$self->{'class'} : $name",@{$self->{'.update'}};
     warn $cmd if $self->debug;
-    $result = $db->raw_query($cmd,'parse');  # sets Ace::Error for us
+    $result = $db->raw_query($cmd,0,'parse');  # sets Ace::Error for us
   } else {   # old way for RPC server and local
     my $cmd = join('; ',"$self->{'class'} : $name",
 		   @{$self->{'.update'}});
@@ -1891,15 +1890,16 @@ sub commit {
     $result = $db->raw_query("parse = $cmd");
   }
 
-  if (defined($result) and $result=~/write access/im) {  # this keeps changing
+  if (defined($result) and $result=~/write( or admin)? access/im) {  # this keeps changing
     $Ace::Error = "Write access denied";
-  } elsif ($result =~ /sorry|parse error/mi) {
+  } elsif (defined($result) and $result =~ /sorry|parse error/mi) {
     $Ace::Error = $result;
   }
   undef $self->{'.update'};
   return !$Ace::Error;
 }
 
+# undo changes
 sub rollback {
     my $self = shift;
     undef $self->{'.update'};
