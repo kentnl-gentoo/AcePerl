@@ -648,8 +648,10 @@ tag.
 sub ObjectLink {
   my $object     = shift;
   my $link_text  = shift;
-  my $url = Object2URL($object,@_) or return $link_text || "$object";
-  return a({-href=>Object2URL($object,@_),-name=>"$object"},$link_text || "$object");
+  my $target     = shift;
+  my $url = Object2URL($object,@_) or return ($link_text || "$object");
+  my @targ = $target ? (-target=>$target) : ();
+  return a({-href=>Object2URL($object,@_),-name=>"$object",@targ},($link_text || "$object"));
 }
 
 =item $db = OpenDatabase()
@@ -851,18 +853,19 @@ An alternative way to do the same thing:
 
 # Toggle a subsection open and close
 sub Toggle {
-    my ($section,$label,$count,$addplural,$addcount) = @_;
-    my %open = %OPEN;
+    my ($section,$label,$count,$addplural,$addcount,$max_open) = @_;
+    $OPEN{$section}++ if defined($max_open) && $count <= $max_open;
 
+    my %open = %OPEN;
     $label ||= $section;
     my $img;
     if (exists $open{$section}) {
 	delete $open{$section};
-	$img =  img({-src=>'/icons/triangle_down.gif',-alt=>'^',
+	$img =  img({-src=>'/ico/triangle_down.gif',-alt=>'^',
 			-height=>6,-width=>11,-border=>0}),
     } else {
 	$open{$section}++;
-	$img =  img({-src=>'/icons/triangle_right.gif',-alt=>'&gt;',
+	$img =  img({-src=>'/ico/triangle_right.gif',-alt=>'&gt;',
 			-height=>11,-width=>6,-border=>0}),
 	my $plural = ($addplural and $label !~ /s$/) ? "${label}s" : "$label";
 	$label = font({-class=>'toggle'},!$addcount ? $plural : "$count $plural");

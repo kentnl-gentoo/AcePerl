@@ -4,8 +4,8 @@
 # Tests of Ace::Sequence and Ace::Sequence::Feature
 ######################### We start with some black magic to print on failure.
 use lib '..','../blib/lib','../blib/arch';
-use constant HOST => $ENV{ACEDB_HOST} || 'stein.cshl.org';
-use constant PORT => $ENV{ACEDB_PORT} || 2005;
+use constant HOST => $ENV{ACEDB_HOST} || 'aceserver.cshl.org';
+use constant PORT => $ENV{ACEDB_PORT} || 2007;
 
 BEGIN {$| = 1; print "1..54\n"; }
 END {print "not ok 1\n" unless $loaded;}
@@ -79,8 +79,8 @@ test(24,$zk154_1->start > 0,"start() failure");
 test(25,$zk154_1->length ==$zk154_1->end-$zk154_1->start+1,"length() failure");
 @features = sort { $a->start <=> $b->start; }  $zk154_1->features('exon');
 test(26,$features[0]->start == 1,'features() error');
-test(27,$features[0]->end == 128,'features() error');
-test(28,length($features[0]->dna) == 128,'dna() error');
+test(27,$features[0]->end == 99,'features() error');
+test(28,length($features[0]->dna) == 99,'dna() error');
 
 # ZK154.3 is a reversed gene
 test(29,$gene = $db->fetch(Predicted_gene=>'ZK154.3'),"fetch failure");

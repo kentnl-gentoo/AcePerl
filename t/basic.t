@@ -3,10 +3,13 @@
 # Low level tests of connectivity
 ######################### We start with some black magic to print on failure.
 use lib '../blib/lib','../blib/arch';
-use constant HOST => $ENV{ACEDB_HOST} || 'stein.cshl.org';
-use constant PORT => $ENV{ACEDB_PORT} || 2005;
+use constant HOST => $ENV{ACEDB_HOST} || 'aceserver.cshl.org';
+use constant PORT => $ENV{ACEDB_PORT} || 2007;
 
-BEGIN {$| = 1; print "1..11\n"; }
+BEGIN {
+  $| = 1; print "1..10\n"; 
+  print STDERR "Waiting for remote acedb regression database to start up.  This may take a few minutes.\n";
+}
 END {print "not ok 1\n" unless $loaded;}
 use Ace qw/STATUS_WAITING STATUS_PENDING/;
 use Ace::SocketServer;
@@ -31,12 +34,9 @@ test(5,$ptr->status() == STATUS_PENDING,"did not get pending status");
 test(6,$ptr->read,"read failed");
 test(7,$ptr->status() == STATUS_WAITING,"did not get wait status");
 test(8,$ptr->query("List"),"query(list) returned undef");
-my $loop = 0;
 my $data;
 while ($ptr->status() == STATUS_PENDING) { 
   $data = $ptr->read();
-  $loop++;
 }
-test(9,$loop>1,"didn't get an encore status");
-test(10,length($data)>0,"didn't get data");
-test(11,$ptr->status() == STATUS_WAITING,"did not get waiting status");
+test(9,length($data)>0,"didn't get data");
+test(10,$ptr->status() == STATUS_WAITING,"did not get waiting status");

@@ -9,7 +9,7 @@ while (!$choice) {
 		  "  1) Interface to Ace socket server and local databases (pure Perl)\n" .
 		  "  2) The above plus XS optimizations (requires C compiler)\n" .
 		  "  3) The above plus RPC server interface (requires C compiler)\n\n" .
-		  "Enter your choice: ", "3");
+		  "Enter your choice: ", "1");
   if ($reply =~ /(\d+)/) {
     $choice = $1;
     die "invalid choice: $choice!" if $choice < 1  ||  $choice > 3;
@@ -25,7 +25,7 @@ push @extlib,'RPC'      if $choice >= 3;
 print "\n";
 setup_sitedefs() if prompt("Do you want to install Ace::Browser? ","n") =~ /[yY]/;
 
-my $headers  = "./ace/wh";
+my $headers  = "./acelib/wh";
 WriteMakefile(
 	      'DISTNAME'     => 'AcePerl',
 	      'NAME'	     => 'Ace',
@@ -42,10 +42,12 @@ WriteMakefile(
                                  'SUFFIX' => 'gz',
 	                         'ZIP'=>'/usr/bin/zip','ZIPFLAGS'=>'-rl'
 			      },
-	      PL_FILES => {'make_docs.PL' => '.docs',
-			   'util/install.PL'=>'util/install.pl',
+	      PL_FILES => {'make_docs.PLS' => '.docs',
+			   'util/install.PLS'=>'util/install.pl',
+			   'util/ace.PLS'=>'util/ace.pl',
 			  },
-	      'clean'        => {'FILES' => 'ace/lib* ace/*.o ace/rpcace*.[ch]'},
+	      EXE_FILES => ['util/ace.pl'],
+	      'clean'        => {'FILES' => 'acelib/lib* acelib/*.o acelib/rpcace*.[ch]'},
 );
 
 exit 0;
