@@ -1,8 +1,8 @@
 package Ace::Object;
 use strict;
-use Carp;
+use Carp qw(:DEFAULT cluck);
 
-# $Id: Object.pm,v 1.46 2003/09/05 14:02:42 lstein Exp $
+# $Id: Object.pm,v 1.56 2005/03/09 15:43:56 lstein Exp $
 
 use overload 
     '""'       => 'name',
@@ -33,6 +33,8 @@ $VERSION = '1.66';
 sub AUTOLOAD {
     my($pack,$func_name) = $AUTOLOAD=~/(.+)::([^:]+)$/;
     my $self = $_[0];
+
+    warn "AUTOLOAD: $self->$func_name()" if Ace->debug;
 
     # This section works with Autoloader
     my $presumed_tag = $func_name =~ /^[A-Z]/ && $self->isObject;  # initial_cap 
@@ -84,7 +86,24 @@ sub AUTOLOAD {
     }
 }
 
-sub DESTROY { }
+sub DESTROY {
+  my $self = shift;
+  return unless defined $self->{class};      # avoid working with temp objects from a search()
+  return if caller() =~ /^(Cache\:\:|DB)/;  # prevent recursion in FileCache code
+  my $db = $self->db or return;
+  return if $self->{'.nocache'};
+  return unless $self->isRoot;
+
+  if ($self->_dirty) {
+    cluck "Destroy for ",overload::StrVal($self)," ",$self->name if Ace->debug;
+    $self->_dirty(0);
+    $db->file_cache_store($self);
+  }
+
+  # remove our in-memory cache
+  # shouldn't be necessary with weakref
+  # $db->memory_cache_delete($self);
+}
 
 ###################### object constructor #################
 # IMPORTANT: The _clone subroutine will copy all instance variables that
@@ -98,8 +117,9 @@ sub new {
   my $self = bless { 'name'  =>  $name,
 		     'class' =>  $class
 		   },$pack;
-  $self->{'db'} = $db if $self->isObject;
+  $self->db($db) if $self->isObject;
   $self->{'.root'}++ if defined $isRoot && $isRoot;
+#  $self->_dirty(1)   if $isRoot;
   return $self
 }
 
@@ -107,12 +127,17 @@ sub new {
 sub newFromText {
   my ($pack,$text,$db) = @_;
   $pack = ref($pack) if ref($pack);
+
   my @array;
   foreach (split("\n",$text)) {
     next unless $_;
+    # this is a hack to fix some txt fields with unescaped tabs
+    # unfortunately it breaks other things
+    s/\?txt\?([^?]*?)\t([^?]*?)\?/?txt?$1\\t$2?/g;  
     push(@array,[split("\t")]);
   }
   my $obj = $pack->_fromRaw(\@array,0,0,$#array,$db);
+  $obj->_dirty(1);
   $obj;
 }
 
@@ -167,10 +192,12 @@ sub isRoot {
 
 ################### handle to ace database #################
 sub db {
-    my $self = shift;
-    defined($_[0])
-	? $self->{'db'} = shift
-	: $self->{'db'};
+  my $self = shift;
+  if (@_) {
+    my $db = shift;
+    $self->{db} = "$db";  # store string representation, not object
+  }
+  Ace->name2db($self->{db});
 }
 
 ### Return a portion of the tree at the indicated tag path     ###
@@ -273,6 +300,7 @@ sub search {
 	  }
 	  if ($tree) {
 	    $self->{'.PATHS'}{$lctag} = $tree->search($tag);
+	    $self->_dirty(1);
 	    last TRY;
 	  }
 	}
@@ -283,14 +311,16 @@ sub search {
 	# this feature if timestamps are active.
 	unless ($self->filled) {
 	  my $subobject = $self->newFromText(
-					     $self->{'db'}->show($self->class,$self->name,$tag),
-					     $self->{'db'}
+					     $self->db->show($self->class,$self->name,$tag),
+					     $self->db
 					    );
 	  if ($subobject) {
+	    $subobject->{'.nocache'}++;
 	    $self->_attach_subtree($lctag => $subobject);
 	  } else {
 	    $self->{'.PATHS'}{$lctag} = undef;
 	  }
+	  $self->_dirty(1);
 	  last TRY;
 	}
 	
@@ -299,6 +329,7 @@ sub search {
 	  next unless $_->isTag;
 	  if (lc $_ eq $lctag) {
 	    $self->{'.PATHS'}{$lctag} = $_;
+	    $self->_dirty(1);
 	    last TRY;
 	  }
 	}
@@ -308,7 +339,8 @@ sub search {
 	foreach (@col) {
 	  next unless $_->isTag;
 	  if (my $r = $_->search($tag)) {
-	    $self->{'.PATHS'}{$lctag} = $r;	
+	    $self->{'.PATHS'}{$lctag} = $r;
+	    $self->_dirty(1);
 	    last TRY;
 	  }
 	}
@@ -316,6 +348,7 @@ sub search {
 	# If we got here, we just didn't find it.  So tag the cache
 	# as empty so that we don't try again
 	$self->{'.PATHS'}{$lctag} = undef;
+	$self->_dirty(1);
       }
 
     my $t = $self->{'.PATHS'}{$lctag};
@@ -349,10 +382,16 @@ sub _attach_subtree {
   if (lc($subobject->right) eq $lctag) { # new version of aceserver as of 11/30/98
     $obj = $subobject->right;
   } else { # old version of aceserver
-    $obj = $self->new('tag',$tag,$self->{'db'});
+    $obj = $self->new('tag',$tag,$self->db);
     $obj->{'.right'} = $subobject->right;
   }
   $self->{'.PATHS'}->{$lctag} = $obj;
+}
+
+sub _dirty {
+  my $self = shift;
+  $self->{'.dirty'} = shift if @_ && $self->isRoot;
+  $self->{'.dirty'};
 }
 
 #### return true if tree is populated, without populating it #####
@@ -382,6 +421,7 @@ sub right {
 
   $self->_fill;
   $self->_parse;
+
   return $self->{'.right'} unless defined $pos;
   croak "Position must be positive" unless $pos >= 0;
 
@@ -408,9 +448,11 @@ sub down {
 #  fetch current node from the database     #
 sub fetch {
     my ($self,$tag) = @_;
-    $self = $self->search($tag) || return if defined $tag;
+    return $self->search($tag) if defined $tag;
     my $thing_to_pick = ($self->isTag and defined($self->right)) ? $self->right : $self;
-    return $thing_to_pick->_clone;
+    return $thing_to_pick unless $thing_to_pick->isObject;
+    my $obj = $self->db->get($thing_to_pick->class,$thing_to_pick->name) if $self->db;
+    return $obj;
 }
 
 #############################################
@@ -493,10 +535,17 @@ sub _fill {
     my $self = shift;
     return if $self->filled;
     return unless $self->db && $self->isObject;
+
     my $data = $self->db->pick($self->class,$self->name);
     return unless $data;
+
+    # temporary object, don't cache it.
     my $new = $self->newFromText($data,$self->db);
     %{$self}=%{$new};
+
+    $new->{'.nocache'}++; # this line prevents the thing from being cached
+
+    $self->_dirty(1);
 }
 
 sub _parse {
@@ -506,10 +555,12 @@ sub _parse {
   my $col = $self->{'.col'};
   my $current_obj = $self;
   my $current_row = $self->{'.start_row'};
-  my $db = $self->{'db'};
+  my $db = $self->db;
+  my $changed;
 
   for (my $r=$current_row+1; $r<=$self->{'.end_row'}; $r++) {
     next unless $raw->[$r][$col] ne '';
+    $changed++;
 
     my $obj_right = $self->_fromRaw($raw,$current_row,$col+1,$r-1,$db);
 
@@ -535,6 +586,7 @@ sub _parse {
   }
 
   my $obj_right = $self->_fromRaw($raw,$current_row,$col+1,$self->{'.end_row'},$db);
+
   # comment handling
   if (defined($obj_right)) {
     my ($t,$i);
@@ -546,6 +598,7 @@ sub _parse {
     }
   }
   $current_obj->{'.right'} = $obj_right;
+  $self->_dirty(1) if $changed;
   delete @{$self}{qw[.raw .start_row .end_row .col]};
 }
 
@@ -556,8 +609,19 @@ sub _fromRaw {
   #  $pack = $pack->factory();
 
   my ($raw,$start_row,$col,$end_row,$db) = @_;
+  $db = "$db" if ref $db;
   return unless defined $raw->[$start_row][$col];
-  my ($class,$name,$ts) = Ace->split($raw->[$start_row][$col]);
+
+  # HACK! Some LongText entries may begin with newlines. This is within the Acedb spec.
+  # Let's purge text entries of leading space and format them appropriate.
+  # This should probably be handled in Freesubs.xs / Ace::split
+  my $temp = $raw->[$start_row][$col];
+#  if ($temp =~ /^\?txt\?\s*\n*/) {
+#    $temp =~ s/^\?txt\?(\s*\\n*)/\?txt\?/;
+#    $temp .= '?';
+#  }
+  my ($class,$name,$ts) = Ace->split($temp);
+
   my $self = $pack->new($class,$name,$db,!($start_row || $col));
   @{$self}{qw(.raw .start_row .end_row .col db)} = ($raw,$start_row,$end_row,$col,$db);
   $self->{'.timestamp'} = $ts if defined $ts;
@@ -1620,9 +1684,10 @@ the current Ace::Object as its first argument.
 
     $object->debug(1);
 
-Change the debugging mode.  A zero turns of debugging messages.
+Change the debugging mode.  A zero turns off debugging messages.
 Integer values produce debug messages on standard error.  Higher
-integers produce progressively more verbose messages.
+integers produce progressively more verbose messages.  This actually
+is just a front end to Ace->debug(), so the debugging level is global.
 
 =head1 SEE ALSO
 
@@ -1752,7 +1817,7 @@ sub asGif {
 
   if ($getcoords) { # just want the coordinates
     my ($start,$stop);
-    my $data = $self->{'db'}->raw_query(join(' ; ',@commands));    
+    my $data = $self->db->raw_query(join(' ; ',@commands));    
     return unless $data =~ /\"[^\"]+\" ([\d.-]+) ([\d.-]+)/;
     ($start,$stop) = ($1,$2);
     return ($start,$stop);
@@ -1761,7 +1826,7 @@ sub asGif {
   push(@commands,"gifdump -");
 
   # do the query
-  my $data = $self->{'db'}->raw_query(join(' ; ',@commands));
+  my $data = $self->db->raw_query(join(' ; ',@commands));
 
   # A $' has been removed here to improve speed -- tim.cutts@incyte.com 2 Sep 1999
 
@@ -1794,7 +1859,7 @@ sub asGif {
 sub timestamp {
     my $self = shift;
     return $self->{'.timestamp'} = $_[0] if defined $_[0];
-    if ($self->{'db'} && !$self->{'.timestamp'}) {
+    if ($self->db && !$self->{'.timestamp'}) {
       $self->_fill;
       $self->_parse;
     }
@@ -1806,7 +1871,7 @@ sub timestamp {
 sub comment {
     my $self = shift;
     return $self->{'.comment'} = $_[0] if defined $_[0];
-    if ($self->{'db'} && !$self->{'.comment'}) {
+    if ($self->db && !$self->{'.comment'}) {
       $self->_fill;
       $self->_parse;
     }
@@ -1906,6 +1971,7 @@ sub add_row {
 
   push(@{$self->{'.update'}},join(' ',map { Ace->freeprotect($_) } (@tags,@values)));
   delete $self->{'.PATHS'}; # uncache cached values
+  $self->_dirty(1);
   1;
 }
 
@@ -1941,6 +2007,7 @@ sub add_tree {
   }
   push(@{$self->{'.update'}},map { join(' ',@tags,$_) } split("\n",$value->asAce));
   delete $self->{'.PATHS'}; # uncache cached values
+  $self->_dirty(1);
   1;
 }
 
@@ -1976,6 +2043,8 @@ sub delete {
   push(@{$self->{'.update'}},join(' ','-D',
 				 map { Ace->freeprotect($_) } ($self->_split_tags($tag),@values)));
   delete $self->{'.PATHS'}; # uncache cached values
+  $self->_dirty(0);
+  $self->db->file_cache_delete($self);
   1;
 }
 
@@ -2010,7 +2079,7 @@ sub commit {
   my $result = '';
 
   # bad design alert: the following breaks encapsulation
-  if ($db->{database}->can('write')) { # new way for socket server
+  if ($db->db->can('write')) { # new way for socket server
     my $cmd = join "\n","$self->{'class'} : $name",@{$self->{'.update'}};
     warn $cmd if $self->debug;
     $result = $db->raw_query($cmd,0,'parse');  # sets Ace::Error for us
@@ -2048,7 +2117,7 @@ sub rollback {
 
 sub debug {
     my $self = shift;
-    return defined($_[0]) ? $self->{'.debug'}=$_[0] : $self->{'.debug'};
+    Ace->debug(@_);
 }
 
 ### Get or set the date style (actually calls through to the database object) ###
@@ -2262,6 +2331,8 @@ sub _asXML {
       $timestamp = $self->escapeXML($timestamp);
       $attributes .= qq( timestamp="$timestamp");
     }
+
+    $tagname = $self->_xmlNumber($tagname) if $tagname =~ /^\d/;
     
     unless (defined $self->right) { # lone tag
       $$out .= $self->isTag || !$opts->{content} ? qq($tab<$tagname$attributes />\n) 
@@ -2293,4 +2364,22 @@ sub escapeXML {
   $string =~ s/</&lt;/g;
   $string =~ s/>/&gt;/g;
   return $string;
+}
+
+sub _xmlNumber {
+  my $self = shift;
+  my $tag  = shift;
+  $tag =~ s/^(\d)/
+        $1 eq '0' ? 'zero'
+      : $1 eq '1' ? 'one'
+      : $1 eq '2' ? 'two'
+      : $1 eq '3' ? 'three'
+      : $1 eq '4' ? 'four'
+      : $1 eq '5' ? 'five'
+      : $1 eq '6' ? 'six'
+      : $1 eq '7' ? 'seven'
+      : $1 eq '8' ? 'eight'
+      : $1 eq '9' ? 'nine'
+      : $1/ex;
+  $tag;
 }

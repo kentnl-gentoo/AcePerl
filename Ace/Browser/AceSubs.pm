@@ -350,7 +350,7 @@ sub AcePicRoot {
   my $umask = umask();
   umask 002;  # want this writable by group
   my ($picroot,$uri);
-  if ($ENV{MOD_PERL}) { # we have apache, so no reason not to take advantage of it
+  if ($ENV{MOD_PERL} && Apache->can('request')) { # we have apache, so no reason not to take advantage of it
     my $r = Apache->request;
     $uri  = join('/',Configuration()->Pictures->[0],"/",$path);
     my $subr = $r->lookup_uri($uri);
@@ -561,7 +561,7 @@ sub Header {
   # next select the correct search script
   my @searches = @{$searches};
   my $self = url(-relative=>1);
-  my $modperl = $ENV{MOD_PERL} && eval {Apache->request->dir_config('AceBrowserConf')};
+  my $modperl = $ENV{MOD_PERL} && Apache->can('request') && eval {Apache->request->dir_config('AceBrowserConf')};
   my @row;
   foreach (@searches) {
     my ($name,$url,$on,$off,$size) = @{$config->searches($_)}{qw/name url onimage
@@ -675,9 +675,17 @@ sub OpenDatabase {
   my $db = $DB{$name};
   return $db if $db && $db->ping;
 
-  my ($host,$port,$user,$password) = getDatabasePorts($name);
-  my @auth = (-user=>$user,-pass=>$password) if $user && $password;
-  $DB{$name} = Ace->connect(-host=>$host,-port=>$port,-timeout=>50,@auth);
+  my ($host,$port,$user,$password,
+      $cache_root,$cache_size,$cache_expires,$auto_purge_interval)
+    = getDatabasePorts($name);
+  my @auth  = (-user=>$user,-pass=>$password) if $user && $password;
+  my @cache = (-cache => { cache_root=>$cache_root,
+			   max_size            => $cache_size || $Cache::SizeAwareCache::NO_MAX_SIZE || -1,  # hardcoded $NO_MAX_SIZE constant
+			   default_expires_in  => $cache_expires       || '1 day',
+			   auto_purge_interval => $auto_purge_interval || '6 hours',
+			 } 
+	      ) if $cache_root;
+  $DB{$name} = Ace->connect(-host=>$host,-port=>$port,-timeout=>50,@auth,@cache);
   return $DB{$name};
 }
 
@@ -972,7 +980,10 @@ print '</tr>
 sub getDatabasePorts {
   my $name = shift;
   my $config = Ace::Browser::SiteDefs->getConfig($name);
-  return ($config->Host,$config->Port,$config->Username,$config->Password) if $config;
+  return ($config->Host,$config->Port,
+	  $config->Username,$config->Password,
+	  $config->Cacheroot,$config->Cachesize,$config->Cacheexpires,$config->Cachepurge,
+	 ) if $config;
 
   # If we get here, then try getservbynam()
   # I think this is a bit of legacy code.
@@ -984,7 +995,7 @@ sub getDatabasePorts {
 
 sub get_symbolic {
 
-  if (exists $ENV{MOD_PERL}) {  # the easy way
+  if (exists $ENV{MOD_PERL} && Apache->can('request')) {  # the easy way
     if (my $r = Apache->request) {
       if (my $conf = $r->dir_config('AceBrowserConf')) {
 	my ($name) = $conf =~ m!([^/]+)\.(?:pm|conf)$!;
