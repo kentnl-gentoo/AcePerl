@@ -2,13 +2,13 @@ package Ace::Object;
 use strict;
 use Carp;
 
-# $Id: Object.pm,v 1.25 2000/09/05 13:50:58 lstein Exp $
+# $Id: Object.pm,v 1.31 2001/01/10 05:42:23 lstein Exp $
 
 use overload 
     '""'       => 'name',
     '=='       => 'eq',
     '!='       => 'ne',
-    'fallback' =>' TRUE';
+    'fallback' => 'TRUE';
 use vars qw($AUTOLOAD $DEFAULT_WIDTH %MO $VERSION);
 use Ace 1.50 qw(:DEFAULT rearrange);
 
@@ -52,7 +52,7 @@ sub AUTOLOAD {
       }
       return $self->search($func_name,@_) if wantarray;
       my $obj = @_ ? $self->search($func_name,@_) : $self->search($func_name,1);
-      
+
       # these nasty heuristics simulate aql semantics.
       # undefined return
       return unless $obj;
@@ -144,6 +144,7 @@ sub ne {
     return !&eq;
 }
 
+
 ############ returns true if this is a top-level object #######
 sub isRoot {
   return exists shift()->{'.root'};
@@ -231,13 +232,33 @@ sub col {
 
 #### Search for a tag, and return the column ####
 #### Uses a breadth-first search (cols then rows) ####
+# This is in the midst of an optimization and is more complex
+# than it should be.  It should take better advantage of the path()
+# method in Ace::Model.
 sub search {
     my ($self,$tag,$subtag,$pos) = @_;
     my $lctag = lc $tag;
 
     TRY: {
-	last TRY if exists $self->{'.PATHS'} && 
-	  exists $self->{'.PATHS'}->{$lctag};
+
+	# look in our tag cache first
+	if (exists $self->{'.PATHS'}) {
+
+	  # we've already cached the desired tree
+	  last TRY if exists $self->{'.PATHS'}{$lctag};
+
+	  # not cached, so try parents of tag
+	  my $m = $self->model;
+	  my @parents = $m->path($lctag) if $m;
+	  my $tree;
+	  foreach (@parents) {
+	    ($tree = $self->{'.PATHS'}{lc $_}) && last;
+	  }
+	  if ($tree) {
+	    $self->{'.PATHS'}{$lctag} = $tree->search($tag);
+	    last TRY;
+	  }
+	}
 
 	# If the object hasn't been filled already, then we can use
 	# acedb's query mechanism to fetch the subobject.  This is a
@@ -249,16 +270,9 @@ sub search {
 					     $self->{'db'}
 					    );
 	  if ($subobject) {
-	    my $obj;
-	    if (lc($subobject->right) eq $lctag) { # new version of aceserver as of 11/30/98
-	      $obj = $subobject->right;
-	    } else { # old version of aceserver
-	      $obj = $self->new('tag',$tag,$self->{'db'});
-	      $obj->{'.right'} = $subobject->right;
-	    }
-	    $self->{'.PATHS'}->{$lctag} = $obj;
+	    $self->_attach_subtree($lctag => $subobject);
 	  } else {
-	    $self->{'.PATHS'}->{$lctag} = undef;
+	    $self->{'.PATHS'}{$lctag} = undef;
 	  }
 	  last TRY;
 	}
@@ -267,7 +281,7 @@ sub search {
 	foreach (@col) {
 	  next unless $_->isTag;
 	  if (lc $_ eq $lctag) {
-	    $self->{'.PATHS'}->{$lctag} = $_;
+	    $self->{'.PATHS'}{$lctag} = $_;
 	    last TRY;
 	  }
 	}
@@ -277,17 +291,17 @@ sub search {
 	foreach (@col) {
 	  next unless $_->isTag;
 	  if (my $r = $_->search($tag)) {
-	    $self->{'.PATHS'}->{$lctag} = $r;	
+	    $self->{'.PATHS'}{$lctag} = $r;	
 	    last TRY;
 	  }
 	}
 
-	# If we got here, we didn't find it.  So tag the cache
-	# as empty.
-	$self->{'.PATHS'}->{$lctag} = undef;
+	# If we got here, we just didn't find it.  So tag the cache
+	# as empty so that we don't try again
+	$self->{'.PATHS'}{$lctag} = undef;
       }
 
-    my $t = $self->{'.PATHS'}->{$lctag};
+    my $t = $self->{'.PATHS'}{$lctag};
     return unless $t;
 
     if (defined $subtag) {
@@ -307,6 +321,21 @@ sub search {
     # If a position is defined, we return everything $POS tags
     # to the right (so-called tag[2] system).
     return $t->col($pos);
+}
+
+# utility routine used in partial tree caching
+sub _attach_subtree {
+  my $self             = shift;
+  my ($tag,$subobject) = @_;
+  my $lctag = lc($tag);
+  my $obj;
+  if (lc($subobject->right) eq $lctag) { # new version of aceserver as of 11/30/98
+    $obj = $subobject->right;
+  } else { # old version of aceserver
+    $obj = $self->new('tag',$tag,$self->{'db'});
+    $obj->{'.right'} = $subobject->right;
+  }
+  $self->{'.PATHS'}->{$lctag} = $obj;
 }
 
 #### return true if tree is populated, without populating it #####
@@ -496,7 +525,7 @@ sub _parse {
 
 sub _fromRaw {
   my $pack = shift;
-  $pack = $pack->factory();
+#  $pack = $pack->factory();
 
   my ($raw,$start_row,$col,$end_row,$db) = @_;
   return unless $raw->[$start_row][$col];
@@ -1509,6 +1538,8 @@ operation returned a result code indicating an error.
 
 =head2 factory() method
 
+WARNING - THIS IS DEFUNCT AND NO LONGER WORKS.  USE THE Ace->class() METHOD INSTEAD
+
     $package = $object->factory;
 
 When a root Ace object instantiates its tree of tags and values, it
@@ -1535,7 +1566,7 @@ L<Ace::Sequence>,L<Ace::Sequence::Multi>
 
 =head1 AUTHOR
 
-Lincoln Stein <lstein@w3.org> with extensive help from Jean
+Lincoln Stein <lstein@cshl.org> with extensive help from Jean
 Thierry-Mieg <mieg@kaa.crbm.cnrs-mop.fr>
 
 Copyright (c) 1997-1998, Lincoln D. Stein

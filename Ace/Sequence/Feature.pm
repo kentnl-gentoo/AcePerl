@@ -1,121 +1,124 @@
 package Ace::Sequence::Feature;
 use strict;
 
-use Ace;
+use Ace qw(:DEFAULT rearrange);
+use Ace::Object;
 use Ace::Sequence::Homol;
 use Carp;
 use AutoLoader 'AUTOLOAD';
 use vars '@ISA','%REV';
 @ISA = 'Ace::Sequence';  # for convenience sake only
-%REV = ('+' => '-', 
-	'-' => '+');  # war is peace, &c.
+%REV = ('+1' => '-1',
+	'-1' => '+1');  # war is peace, &c.
 
-
-use overload '""' => 'asString';
+use overload 
+  '""' => 'asString',
+  ;
 
 # parse a line from a sequence list
 sub new {
-  my $class = shift;
-  my ($gff_line,$src,$norelative,$db) = @_;
-  croak "must provide a line from a GFF file"  unless $gff_line;
-  return bless { parent     => $src,
-		 data       => [split("\t",$gff_line)],
-		 norelative => $norelative,
-		 db         => $db,
-	       },$class;
-}
-
-# $_[0] is field no, $_[1] is self, $_[2] is optional replacement value
-sub _field {
-    my $v = defined $_[2] ? $_[1]->{data}->[$_[0]] = $_[2] 
-                          : $_[1]->{data}->[$_[0]];
-    return if $v eq '.';
-    return $v;
-}
-
-1;
-
-# __END__
-
-sub parent { $_[0]->{'parent'}; }
-sub source_seq { $_[0]->parent; }
-sub db     { return $_[0]->{'db'} ||= $_[0]->parent->db($_[0]->db_id); }
-sub abs2rel { 
-  # CURIOUS FEATURE WARNING: DB says that the 2+ here doesn't effect anything.
-  $_[0]->parent->gff_reversed ? 2 + $_[0]->parent->offset - $_[1] : $_[1] - $_[0]->parent->offset; 
-}
-
-sub seqname   { $_[0]->db->fetch(Sequence=>_field(0,@_)); }
-sub source    { _field(1,@_); }  # I don't like this term...
-sub method    { _field(1,@_); }  # ... I prefer "method"
-sub subtype   { _field(1,@_); }  # ... or even "subtype"
-sub feature   { _field(2,@_); }  # I don't like this term...
-sub type      { _field(2,@_); }  # ... I prefer "type"
-sub abs_start { _field(3,@_); }  # start, absolute coordinates
-sub abs_end   { _field(4,@_); }  # end, absolute coordinates
-sub score     { _field(5,@_); }  # float indicating some sort of score
-sub strand    { !$_[0]->abs && $_[0]->parent->gff_reversed ? 
-		    $REV{_field(6,@_)} : 
-		    _field(6,@_); }  # one of +, - or undef
-sub frame     { _field(7,@_); }  # one of 1, 2, 3 or undef
-sub info      {                  # returns Ace::Object(s) with info about the feature
-  my ($self) = @_;
-  unless ($self->{'info'}) {
-    my $info = _field(8,@_);    # be prepared to get an array of interesting objects!!!!
-    return unless $info;
-    my @data = split(/\s*;\s*/,$info);
-    $self->{'info'} = [map {$_[0]->toAce($_)} @data];
+  my $pack = shift;
+  my ($parent,$ref,$r_offset,$r_strand,$abs,$gff_line,$db) = @_;
+  my ($sourceseq,$method,$type,$start,$end,$score,$strand,$frame,$group) = split "\t",$gff_line;
+  if (defined($strand)) {
+    $strand = $strand eq '-' ? '-1' : '+1';
+  } else {
+    $strand = 0;
   }
-  return wantarray ? @{$self->{'info'}} : $self->{'info'}->[0];
+
+  # for efficiency/performance, we don't use superclass new() method, but modify directly
+  # handling coordinates.  See SCRAPS below for what should be in here
+  $strand = '+1' if $strand < 0 && $r_strand < 0;  # two wrongs do make a right
+  ($start,$end) = ($end,$start) if $strand < 0;
+  my $offset = $start - 1;
+  my $length = ($end > $start) ? $end - $offset : $end - $offset - 2;
+
+  # handle negative strands
+  $offset ||= 0;
+  $offset *= -1 if $r_strand < 0 && $strand != $r_strand;
+
+  my $self= bless {
+		   obj      => $ref,
+		   offset   => $offset,
+		   length   => $length,
+		   parent   => $parent,
+		   p_offset => $r_offset,
+		   refseq   => [$ref,$r_offset,$r_strand],
+		   strand   => $r_strand,
+		   fstrand  => $strand,
+		   absolute => $abs,
+		   info     => {
+				seqname=> $sourceseq,
+				method => $method,
+				type   => $type,
+				score  => $score,
+				frame  => $frame,
+				group  => $group,
+				db     => $db,
+			       }
+		  },$pack;
+  return $self;
 }
 
-sub db_id { _field(9,@_); }    # database identifier (from Ace::Sequence::Multi)
- 
-sub reversed  { $_[0]->strand eq '-'; }
-sub abs_reversed { $_[0]->strand ne $_[0]->parent->strand; }
+sub smapped { 1; }
+
+# $_[0] is field name, $_[1] is self, $_[2] is optional replacement value
+sub _field {
+  my $self = shift;
+  my $field = shift;
+  my $v = $self->{info}{$field};
+  $self->{info}{$field} = shift if @_;
+  return if defined $v && $v eq '.';
+  return $v;
+}
+
+sub strand { return $_[0]->{fstrand} }
+
+sub seqname   { 
+  my $self = shift;
+  my $seq = $self->_field('seqname');
+  $self->db->fetch(Sequence=>$seq); 
+}
+
+sub method    { shift->_field('method',@_) }  # ... I prefer "method"
+sub subtype   { shift->_field('method',@_) }  # ... or even "subtype"
+sub type      { shift->_field('type',@_)   }  # ... I prefer "type"
+sub score     { shift->_field('score',@_)  }  # float indicating some sort of score
+sub frame     { shift->_field('frame',@_)  }  # one of 1, 2, 3 or undef
+sub info      {                  # returns Ace::Object(s) with info about the feature
+  my $self = shift;
+  unless ($self->{group}) {
+    my $info = $self->{info}{group} || 'Method "'.$self->method.'"';
+    my @data = split(/\s*;\s*/,$info);
+    $self->{group} = [map {$self->toAce($_)} @data];
+  }
+  return wantarray ? @{$self->{group}} : $self->{group}->[0];
+}
+
+# bioperl compatibility
+sub primary_tag { shift->type(@_)    }
+sub source_tag  { shift->subtype(@_) }
+
+sub db { # database identifier (from Ace::Sequence::Multi)
+  my $self = shift;
+  my $db = $self->_field('db',@_);
+  return $db || $self->SUPER::db;
+}
 
 sub group  { $_[0]->info; }
 sub target { $_[0]->info; }
 
-# abs/relative adjustments
-sub start    {  
-  my $self = shift;
-  my $val = $self->parent->gff_reversed ? $self->abs_end : $self->abs_start; 
-  return $val if $self->abs;
-  return $self->abs2rel($val);
-}
-	
-sub end    {  
-  my $self = shift;
-  my $val = $self->parent->gff_reversed ? $self->abs_start : $self->abs_end; 
-  return $val if $self->abs;
-  return $self->abs2rel($val);
-}
-
-sub length { 
-  $_[0]->end - $_[0]->start + 1;
-}
-
-sub dna {
-  return Ace::Sequence->new($_[0])->dna;
-}
-
 sub asString {
   my $self = shift;
+  my $name = $self->SUPER::asString;
   my $type = $self->type;
-  my $name = _field(8,$self);
-  return $self->id unless $name;
-  ($name) = $name =~ /\"([^\"]+)\"/; # get rid of quote
-  my $start = $self->start;
-  my $end = $self->end;
-  return $self->strand eq '-' ? "$type:$name/$end,$start" 
-                              : "$type:$name/$start,$end";
+  return "$type:$name";
 }
 
 # unique ID
 sub id {
   my $self = shift;
-  my $source = $self->source_seq->name;
+  my $source = $self->source->name;
   my $start = $self->start;
   my $end = $self->end;
   return "$source/$start,$end";
@@ -138,26 +141,27 @@ sub tag2ace {
     my ($tag,@data) = @_;
 
     # Special cases, hardcoded in Ace GFF code...
+    my $db = $self->db;;
+    my $class = $db->class;
 
     # for Notes we just return a text, no database associated
-    return Ace::Object->new(Text=>$data[0]) if $tag eq 'Note';
+    return $class->new(Text=>$data[0]) if $tag eq 'Note';
     
     # for homols, we create the indicated Protein or Sequence object
     # then generate a bogus Homology object (for future compatability??)
     if ($tag eq 'Target') {
-	my $db = $self->db;;
 	my ($objname,$start,$end) = @data;
-	my ($class,$name) = $objname =~ /^(\w+):(.+)/;
-	return Ace::Sequence::Homol->new($class,$name,$db,$start,$end);
+	my ($classe,$name) = $objname =~ /^(\w+):(.+)/;
+	return Ace::Sequence::Homol->new($classe,$name,$db,$start,$end);
     }
 
     # General case:
-    my $obj = Ace::Object->new($tag=>$data[0],$self->db);
+    my $obj = $class->new($tag=>$data[0],$self->db);
 
     return $obj if defined $obj;
 
     # Last resort, return a Text
-    return Ace::Object->new(Text=>$data[0]);
+    return $class->new(Text=>$data[0]);
 }
 
 1;
@@ -292,15 +296,15 @@ method returns undef.
 
   $strand = $feature->strand;
 
-Returns the strandedness of this feature, either "+" or "-".  For
-features that are not stranded, returns undef.
+Returns the strandedness of this feature, either "+1" or "-1".  For
+features that are not stranded, returns 0.
 
 =item reversed()
 
   $reversed = $feature->reversed;
 
 Returns true if the feature is reversed relative to its source
-sequence. 
+sequence.
 
 =item frame()
 
@@ -362,7 +366,7 @@ L<Ace::Sequence::FeatureList>, L<GFF>
 
 =head1 AUTHOR
 
-Lincoln Stein <lstein@w3.org> with extensive help from Jean
+Lincoln Stein <lstein@cshl.org> with extensive help from Jean
 Thierry-Mieg <mieg@kaa.crbm.cnrs-mop.fr>
 
 Copyright (c) 1999, Lincoln D. Stein
@@ -375,3 +379,23 @@ disclaimers of warranty.
 
 
 __END__
+# SCRAPS
+# the new() code done "right"
+# sub new {
+#    my $pack = shift;
+#    my ($ref,$r_offset,$r_strand,$gff_line) = @_;
+#    my ($sourceseq,$method,$type,$start,$end,$score,$strand,$frame,$group) = split "\t";
+#    ($start,$end) = ($end,$start) if $strand < 0;
+#    my $self = $pack->SUPER::new($source,$start,$end);
+#    $self->{info} = {
+#  				seqname=> $sourceseq,
+#  				method => $method,
+#  				type   => $type,
+#  				score  => $score,
+#  				frame  => $frame,
+#  				group  => $group,
+#  		  };
+#    $self->{fstrand} = $strand;
+#    return $self;
+#  }
+

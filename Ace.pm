@@ -6,7 +6,9 @@ use vars qw($VERSION @ISA @EXPORT @EXPORT_OK $Error);
 
 require Exporter;
 require AutoLoader;
-use overload '""' => 'asString';
+use overload 
+  '""'  => 'asString',
+  'cmp' => 'cmp';
 
 @ISA = qw(Exporter AutoLoader);
 
@@ -15,7 +17,7 @@ use overload '""' => 'asString';
 
 # Optional exports
 @EXPORT_OK = qw(rearrange ACE_PARSE);
-$VERSION = '1.67';
+$VERSION = '1.70';
 
 use constant STATUS_WAITING => 0;
 use constant STATUS_PENDING => 1;
@@ -25,7 +27,6 @@ use constant ACE_PARSE      => 3;
 use constant DEFAULT_PORT   => 200005;  # rpc server
 use constant DEFAULT_SOCKET => 2005;    # socket server
 
-require Ace::Object;
 require Ace::Iterator;
 eval qq{use Ace::Freesubs};  # XS file, may not be available
 
@@ -67,18 +68,20 @@ sub connect {
   } else { # either RPC or socket server
     $host      ||= 'localhost';
     $user      ||= $u || '';
-    $pass      ||= $p || '';
+    $path      ||= $p || '';
     $port        ||= $server_type eq 'Ace::SocketServer' ? DEFAULT_SOCKET : DEFAULT_PORT;
-    $query_timeout ||= 120;
-    $timeout = 25 unless defined $timeout;
+    $query_timeout = 120 unless defined $query_timeout;
     $server_type ||= 'Ace::SocketServer' if $port <  100000;
     $server_type ||= 'Ace::RPC'          if $port >= 100000;
   }
   
   # we've normalized parameters, so do the actual connect
   eval "require $server_type" || croak "Module $server_type not loaded: $@";
-  $database = $server_type->connect($path) if $path;
-  $database = $server_type->connect($host,$port,$query_timeout,$user,$pass) if $host && $port;
+  if ($path) {
+    $database = $server_type->connect($path);
+  } else {
+    $database = $server_type->connect($host,$port,$query_timeout,$user,$pass);
+  }
   
   unless ($database) {
     $Ace::Error ||= "Couldn't open database";
@@ -94,7 +97,18 @@ sub connect {
 		    'date_style' => 'java',
 		    'auto_save' => 0,
 		   },$class;
+  eval "require $self->{class}" or warn $@;
   return $self;
+}
+
+sub class {
+  my $self = shift;
+  my $d = $self->{class};
+  if (@_) {
+    $self->{class} = shift;
+    eval "require $self->{class}" or warn $@;
+  }
+  $d;
 }
 
 sub process_url {
@@ -147,9 +161,9 @@ sub model {
 # Fetch one or a group of objects from the database
 sub fetch {
   my $self = shift;
-  my ($class,$pattern,$count,$offset,$query,$filled,$total) =  
+  my ($class,$pattern,$count,$offset,$query,$filled,$total,$filltag) =  
     rearrange(['CLASS',['NAME','PATTERN'],'COUNT','OFFSET','QUERY',
-	       ['FILL','FILLED'],'TOTAL'],@_);
+	       ['FILL','FILLED'],'TOTAL','FILLTAG'],@_);
   $offset += 0;
   $pattern ||= '*';
   $pattern = Ace->freeprotect($pattern);
@@ -166,7 +180,12 @@ sub fetch {
   # object count without bothering to fetch the objects
   return $cnt if !wantarray and $pattern =~ /(?:[^\\]|^)[*?]/;
 
-  my (@h) = $filled ? $self->_fetch($count,$offset) : $self->_list($count,$offset);
+  my(@h);
+  if ($filltag) {
+    @h = $self->_fetch($count,$offset,$filltag);
+  } else {
+    @h = $filled ? $self->_fetch($count,$offset) : $self->_list($count,$offset);
+  }
   return wantarray ? @h : $h[0];
 }
 
@@ -285,9 +304,9 @@ sub rearrange {
 
       %param = @param;                # convert into associative array
     }
-    
+
     my(@return_array);
-    
+
     local($^W) = 0;
     my($key)='';
     foreach $key (@$order) {
@@ -326,7 +345,8 @@ sub _list {
   my $result = $self->raw_query($query);
   $result =~ s/\0//g;  # get rid of &$#&@( nulls
   foreach (split("\n",$result)) {
-    next unless my ($class,$name) = Ace->split($_);
+    my ($class,$name) = Ace->split($_);
+    next unless $class and $name;
     push(@result,$self->{'class'}->new($class,$name,$self,1));
   }
   return @result;
@@ -335,15 +355,24 @@ sub _list {
 # return a portion of the active list
 sub _fetch {
   my $self = shift;
-  my ($count,$start) = @_;
+  my ($count,$start,$tag) = @_;
   my (@result);
-  my $query = "show -j";
+  $tag = '' unless defined $tag;
+  my $query = "show -j $tag";
   $query .= ' -T' if $self->{timestamps};
   $query .= " -b $start"  if defined $start;
   $query .= " -c $count"  if defined $count;
   $self->{database}->query($query);
   while (my @objects = $self->_fetch_chunk) {
     push (@result,@objects);
+  }
+  # copy tag into a portion of the tree
+  if ($tag) {
+    for my $tree (@result) {
+      my $obj = $self->{class}->new($tree->class,$tree->name,$self,1);
+      $obj->_attach_subtree($tag=>$tree);
+      $tree = $obj;
+    }
   }
   return wantarray ? @result : $result[0];
 }
@@ -377,6 +406,17 @@ sub asString {
   my $server = $self->db->isa('Ace::SocketServer') ? 'sace' : 'rpcace';
   return "$server://$self->{host}:$self->{port}" if $self->{'host'};
   return ref $self;
+}
+
+sub cmp {
+  my ($self,$arg,$reversed) = @_;
+  my $cmp;
+  if (ref($arg) and $arg->isa('Ace')) {
+    $cmp = $self->asString cmp $arg->asString;
+  } else {
+    $cmp = $self->asString cmp $arg;
+  }
+  return $reversed ? -$cmp : $cmp;
 }
 
 1;
@@ -663,6 +703,7 @@ Please see L<Ace::Object>.
 			  -count=>$count,
 			  -offset=>$offset,
                           -fill=>$fill,
+			  -filltag=>$tag,
 	                  -total=>\$total);
     @objects = $db->fetch(-query=>$query);
 
@@ -712,6 +753,17 @@ the full contents of the retrieved object (for example, to display
 them in a tree browser) it can be more efficient to fetch them in
 filled mode. You do this by calling fetch() with the argument of
 B<-fill> set to a true value.
+
+The B<-filltag> argument, if provided, asks the database to fill in
+the subtree anchored at the indicated tag.  This will improve
+performance for frequently-accessed subtrees.  For example:
+
+   @objects = $db->fetch(-name    => 'D123*',
+                         -class   => 'Sequence',
+                         -filltag => 'Visible');
+
+This will fetch all Sequences named D123* and fill in their Visible
+trees in a single operation.
 
 Other arguments in the named parameter calling form are B<-count>, to
 retrieve a certain maximum number of objects, and B<-offset>, to

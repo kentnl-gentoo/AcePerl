@@ -7,11 +7,29 @@ use Ace 1.50 qw(:DEFAULT rearrange);
 use Ace::Sequence::FeatureList;
 use Ace::Sequence::Feature;
 use AutoLoader 'AUTOLOAD';
+use vars '$VERSION';
+my %CACHE;
 
-use overload '""' => 'asString';
-*abs_start  = \&start;
-*abs_end    = \&end;
-*parent_seq = \&parent;
+$VERSION = '1.50';
+
+use constant CACHE => 1;
+
+use overload 
+  '""'       => 'asString',
+  cmp        => 'cmp',
+;
+
+# synonym: stop = end
+*stop = \&end;
+*abs = \&absolute;
+*source_seq = \&source;
+
+# internal keys
+#    parent    => reference Sequence in "+" strand
+#    p_offset  => our start in the parent
+#    length    => our length
+#    strand    => our strand (+ or -)
+#    refseq    => reference Sequence for coordinate system
 
 # object constructor
 # usually called like this:
@@ -27,16 +45,17 @@ use overload '""' => 'asString';
 # $refseq, if provided, will be used to establish the coordinate
 # system.  Otherwise the first base pair will be set to 1.
 sub new {
-  local $^W = 0;
   my $pack = shift;
-  my ($obj,$offset,$len,$refseq,$db,$name) = 
+  my ($seq,$start,$end,$offset,$length,$refseq,$db) = 
     rearrange([
 	       ['SEQ','SEQUENCE','SOURCE'],
+	      'START',
+	       ['END','STOP'],
 	       ['OFFSET','OFF'],
 	       ['LENGTH','LEN'],
 	       'REFSEQ',
 	       ['DATABASE','DB'],
-	       'NAME'],@_);
+	      ],@_);
 
   # Object must have a parent sequence and/or a reference
   # sequence.  In some cases, the parent sequence will be the
@@ -45,140 +64,246 @@ sub new {
 
   # fetch the sequence object if we don't have it already
   croak "Please provide either a Sequence object or a database and name"
-    unless defined $obj || ($name && $db);
+    unless ref($seq) || ($seq && $db);
 
-  $obj ||= $db->fetch('Sequence'=>$name);
+  # convert start into offset
+  $offset = $start - 1 if defined($start) and !defined($offset);
+
+  # convert stop/end into length
+  $length = ($end > $start) ? $end - $offset : $end - $offset - 2
+    if defined($end) && !defined($length);
+
+  # if just a string is passed, try to fetch a Sequence object
+  my $obj = ref($seq) ? $seq : $db->fetch('Sequence'=>$seq);
   unless ($obj) {
     Ace->error("No Sequence named $obj found in database");
     return;
   }
-  
-  my ($parent,$p_offset,$p_length,$source_reversed);
-  ($obj,$parent,$p_offset,$p_length,$source_reversed) = _get_refseq($obj,$refseq);
-  unless ($obj) {
-    Ace->error("Unable to find a useable Sequence to use as the source");
-    return;
-  }
 
-#  $len +=2 if defined $len && $len < 0 && $p_length > 0; # to correct for 1-based coordinates
-#  $len -=2 if defined $len && $len > 0 && $p_length < 0; # to correct for 1-based coordinates
-  my $native_length = 0;
+  # get parent coordinates and length of this sequence
+  # the parent is an Ace Sequence object in the "+" strand
+  my ($parent,$p_offset,$p_length,$strand) = find_parent($obj);
+  return unless $parent;
 
-  if ($p_length >= 0 || $source_reversed) {  # We are oriented positive relative to parent
-    $native_length = $p_length if $source_reversed; # bug in Ace?
-    $p_offset += $offset if defined $offset;
-    $p_length =  $len if defined $len;
-  } else {
-    $p_offset -= $offset if defined $offset;
-    $p_length =  -$len if defined $len;
-  }
+  # handle negative strands
+  my $r_strand = $strand;
+  my $r_offset = $p_offset;
+  $offset ||= 0;
+  $offset *= -1 if $strand < 0;
 
+  # handle feature objects
+  $offset += $obj->offset if $obj->can('smapped');
 
-  # store the object into our instance variables and return
-  return bless {
-		'obj'           => $obj,
-		'parent'        => $parent,
-		'offset'        => $p_offset,
-		'length'        => $p_length,
-		'norelative'    => defined $refseq,
-		'refseq'        => $refseq,
-		'source_reversed' => CORE::abs($native_length),
-	       },$pack;
-}
+  # get source
+  my $source = $obj->can('smapped') ? $obj->source : $obj;
 
-# Toggle between absolute and relative coordinates
-# "Absolute" coordinates is relative to the reference sequence.
-#            and (+) strand is TRUE (+) strand
-# "Relative" coordinates is relative to the source sequence.
-sub abs {
-  my $self = shift;
-  $self->{'norelative'} = $_[0] if defined $_[0];
-  return $self->{'norelative'};
+  # store the object into our instance variables
+  my $self = bless {
+		    obj        => $source,
+		    offset     => $offset,
+		    length     => $length || $p_length,
+		    parent     => $parent,
+		    p_offset   => $p_offset,
+		    refseq     => [$source,$r_offset,$r_strand],
+		    strand     => $strand,
+		    absolute   => 0,
+		    automerge  => 1,
+		   },$pack;
+
+  # set the reference sequence
+  eval { $self->refseq($refseq) } or return if defined $refseq;
+
+  # wheww!
+  return $self;
 }
 
 # return the "source" object that the user offset from
-sub source_seq { return $_[0]->{'obj'}; }
-
-# return the parent object (which sets the coordinate system)
-sub parent { return $_[0]->{'parent'}; }
-
-# return starting position in absolute (source) coordinates
-sub start {  return  $_[0]->offset + 1; }
-
-# offset is in 0 based coordinates
-sub offset { return $_[0]->{'offset'}; }
-
-# return ending position in absolute (source) coordinates
-sub end  {  
-  return $_[0]->{'offset'} + CORE::abs($_[0]->{'length'}) if $_[0]->{'source_reversed'}; #special case
-  my $end = $_[0]->{'offset'} + $_[0]->{'length'};
-  $end +=2 if $_[0]->reversed;
-  return $end;
+sub source {
+  $_[0]->{obj};
 }
 
-# return length
+# return the parent object
+sub parent { $_[0]->{parent} }
+
+# return the length
+#sub length { $_[0]->{length} }
 sub length { 
-#  return $_[0]->{'length'} > 0 ? $_[0]->{'length'} : $_[0]->{'length'}-2; 
-  return $_[0]->end  - $_[0]->start -  1 if $_[0]->reversed;
-  return $_[0]->end - $_[0]->start + 1;
+  my $self = shift;
+  my ($start,$end) = ($self->start,$self->end);
+  return $end - $start + ($end > $start ? 1 : -1);  # for stupid 1-based adjustments
 }
 
-# return whether we are reversed
-sub reversed { 
-  return $_[0]->{'length'} < 0; 
+sub reversed {  return shift->strand < 0; }
+
+sub automerge {
+  my $self = shift;
+  my $d = $self->{automerge};
+  $self->{automerge} = shift if @_;
+  $d;
 }
 
-sub gff_reversed {
-  return if $_[0]->{'source_reversed'};
-  return $_[0]->reversed;
+# return reference sequence
+sub refseq {
+  my $self = shift;
+  my $prev = $self->{refseq};
+  if (@_) {
+    my $refseq = shift;
+    my $arrayref;
+
+  BLOCK: {
+      last BLOCK unless defined ($refseq);
+
+      if (ref($refseq) && ref($refseq) eq 'ARRAY') {
+	$arrayref = $refseq;
+	last BLOCK;
+      }
+
+      if (ref($refseq) && ($refseq->can('smapped'))) {
+	croak "Reference sequence has no common ancestor with sequence"
+	  unless $self->parent eq $refseq->parent;
+	my ($a,$b,$c) = @{$refseq->{refseq}};
+	#	$b += $refseq->offset;
+	$b += $refseq->offset;
+	$arrayref = [$refseq,$b,$refseq->strand];
+	last BLOCK;
+      }
+
+
+      # look up reference sequence in database if we aren't given
+      # database object already
+      $refseq = $self->db->fetch('Sequence' => $refseq)
+	unless $refseq->isa('Ace::Object');
+      croak "Invalid reference sequence" unless $refseq;
+
+      # find position of ref sequence in parent strand
+      my ($r_parent,$r_offset,$r_length,$r_strand) = find_parent($refseq);
+      croak "Reference sequence has no common ancestor with sequence" 
+	unless $r_parent eq $self->{parent};
+
+      # set to array reference containing this information
+      $arrayref = [$refseq,$r_offset,$r_strand];
+    }
+    $self->{refseq} = $arrayref;
+  }
+  return unless $prev;
+  return $self->parent if $self->absolute;
+  return wantarray ? @{$prev} : $prev->[0];
 }
 
-# __END__
+# return strand
+sub strand { return $_[0]->{strand} }
 
-#AUTOLOADED METHODS
+# return reference strand
+sub r_strand {
+  my $self = shift;
+  return "+1" if $self->absolute;
+  if (my ($ref,$r_offset,$r_strand) = $self->refseq) {
+    return $r_strand;
+  } else {
+    return $self->{strand}
+  }
+}
+
+sub offset { $_[0]->{offset} }
+sub p_offset { $_[0]->{p_offset} }
+
+sub smapped { 1; }
+sub type    { 'Sequence' }
+
+# return the database this sequence is associated with
+sub db {
+  return $_[0]->{db} ||= $_[0]->source->db;
+}
+
+sub start {
+  my ($self,$abs) = @_;
+  $abs = $self->absolute unless defined $abs;
+  return $self->{p_offset} + $self->{offset} + 1 if $abs;
+
+  if ($self->refseq) {
+    my ($ref,$r_offset,$r_strand) = $self->refseq;
+    return $r_strand < 0 ? 1 + $r_offset - ($self->{p_offset} + $self->{offset})
+                         : 1 + $self->{p_offset} + $self->{offset} - $r_offset;
+  }
+
+  else {
+    return $self->{offset} +1;
+  }
+
+}
+
+sub end { 
+  my ($self,$abs) = @_;
+  my $start = $self->start($abs);
+  my $f = $self->{length} > 0 ? 1 : -1;  # for stupid 1-based adjustments
+  if ($abs) {
+    my $r_strand = $self->r_strand;
+    return $start - $self->{length} + $f 
+      if $r_strand < 0 or $self->{strand} < 0 or $self->{length} < 0;
+    return  $start + $self->{length} - $f
+  }
+  return  $start + $self->{length} - $f if $self->r_strand eq $self->{strand};
+  return  $start - $self->{length} + $f;
+}
+
+# turn on absolute coordinates (relative to reference sequence)
+sub absolute {
+  my $self = shift;
+  my $prev = $self->{absolute};
+  $self->{absolute} = $_[0] if defined $_[0];
+  return $prev;
+}
 
 # human readable string (for debugging)
 sub asString {
   my $self = shift;
-  return join '',$self->{'parent'},'/',$self->start,',',$self->end;
+  if ($self->absolute) {
+    return join '',$self->parent,'/',$self->start,',',$self->end;
+  } elsif (my $ref = $self->refseq){
+    my $label = $ref->isa('Ace::Sequence::Feature') ? $ref->info : "$ref";
+    return join '',$label,'/',$self->start,',',$self->end;
+
+  } else {
+    join '',$self->source,'/',$self->start,',',$self->end;
+  }
 }
 
-# return reference sequence
-sub ref_seq {
-  my $self = shift;
-  return $self->abs ? $self->{'refseq'} || $self->{'parent'} : $self->{'parent'};
-}
-
-# return the database this sequence is associated with
-sub db {
-  return $_[0]->source_seq->db;
+sub cmp {
+  my ($self,$arg,$reversed) = @_;
+  if (ref($arg) and $arg->isa('Ace::Sequence')) {
+    my $cmp = $self->parent cmp $arg->parent 
+      || $self->start <=> $arg->start;
+    return $reversed ? -$cmp : $cmp;
+  }
+  my $name = $self->asString;
+  return $reversed ? $arg cmp $name : $name cmp $arg;
 }
 
 # Return the DNA
 sub dna {
   my $self = shift;
   return $self->{dna} if $self->{dna};
-  my $raw = $self->_query(undef,'seqdna');
-  $raw=~s/^>.*\n//;
+  my $raw = $self->_query('seqdna');
+  $raw=~s/^>.*\n//m;
   $raw=~s/^\/\/.*//mg;
   $raw=~s/\n//g;
   $raw =~ s/\0+\Z//; # blasted nulls!
-  _complement(\$raw) if $self->gff_reversed;
+  my $effective_strand = $self->end >= $self->start ? '+1' : '-1';
+  _complement(\$raw) if $self->r_strand ne $effective_strand;
   return $self->{dna} = $raw;
 }
 
 # return a gff file
 sub gff {
   my $self = shift;
-  my ($abs,$features,$db) = rearrange([['ABS','ABSOLUTE'],'FEATURES','DB'],@_);
-  $abs = $self->abs unless defined $abs;
+  my ($abs,$features) = rearrange([['ABS','ABSOLUTE'],'FEATURES'],@_);
+  $abs = $self->absolute unless defined $abs;
 
   # can provide list of feature names, such as 'similarity', or 'all' to get 'em all
   #  !THIS IS BROKEN; IT SHOULD LOOK LIKE FEATURE()!
   my $opt = $self->_feature_filter($features);
 
-  $db ||= $self->db;
-  my $gff = $self->_gff($db,$opt);
+  my $gff = $self->_gff($opt);
   $self->transformGFF(\$gff) unless $abs;
   return $gff;
 }
@@ -203,49 +328,160 @@ sub GFF {
 # features('similarity:EST','annotation:assembly_tag')
 sub features {
   my $self = shift;
+  my ($filter,$opt) = $self->_make_filter(@_);
 
-  # parse out the filter
-  my %filter;
-  foreach (@_) {
-    my ($type,$filter) = split(':');
-    $filter{$type} = $filter;
-  }
-  
-  # create pattern-match sub
-  my $sub;
-  if (%filter) {
-    my $s = "sub { my \@d = split(\"\\t\",\$_[0]);\n";
-    for my $type (keys %filter) {
-      my $expr;
-      my $subtype = $filter{$type};
-      if (defined($type) && defined($subtype)) {
-	$expr = "return 1 if \$d[2]=~/$type/i && \$d[1]=~/$subtype/i;\n"
-      } else {
-	$expr = defined($subtype) ? "return 1 if \$d[1]=~/$subtype/i;\n" 
-                                  : "return 1 if \$d[2]=~/$type/i;\n" 
-      }
-      $s .= $expr;
-    }
-    $s .= "return;\n }";
-    $sub = eval $s;
-    croak $@ if $@;
-  } else {
-    $sub = sub { 1; }
-  }
   # get raw gff file
-  my $gff = $self->gff('-abs'=>1,-features=>[keys %filter]);
+  my $gff = $self->gff(-features=>$opt);
 
-  my @features = map {Ace::Sequence::Feature->new($_,$self,$self->{norelative})} 
-                 grep !m@^(?:\#|//)@ && $sub->($_),split("\n",$gff);
+  # turn it into a list of features
+  my @features = $self->_make_features($gff,$filter);
+
+
+  if ($self->automerge) {  # automatic merging
+    # fetch out constructed transcripts and clones
+    my %types = map {lc($_)=>1} (@$opt,@_);
+    if ($types{'transcript'}) {
+      push @features,$self->_make_transcripts(\@features);
+      @features = grep {$_->type !~ /^(intron|exon)$/ } @features;
+    }
+    push @features,$self->_make_clones(\@features)      if $types{'clone'};
+    if ($types{'similarity'}) {
+      my @f = $self->_make_alignments(\@features);
+      @features = grep {$_->type ne 'similarity'} @features;
+      push @features,@f;
+    }
+  }
 
   return wantarray ? @features : \@features;
 }
+
+# A little bit more complex - assemble a list of "transcripts"
+# consisting of Ace::Sequence::Transcript objects.  These objects
+# contain a list of exons and introns.
+sub transcripts {
+  my $self    = shift;
+  my $curated = shift;
+  my $ef       = $curated ? "exon:curated"   : "exon";
+  my $if       = $curated ? "intron:curated" : "intron";
+  my $sf       = $curated ? "Sequence:curated" : "Sequence";
+  my @features = $self->features($ef,$if,$sf);
+  return unless @features;
+  return $self->_make_transcripts(\@features);
+}
+
+sub _make_transcripts {
+  my $self = shift;
+  my $features = shift;
+
+  require Ace::Sequence::Transcript;
+  my %transcripts;
+
+  for my $feature (@$features) {
+    my $transcript = $feature->info;
+    if ($feature->type =~ /^(exon|intron|cds)$/) {
+      my $type = $1;
+      push @{$transcripts{$transcript}{$1}},$feature;
+    } elsif ($feature->type eq 'Sequence') {
+      $transcripts{$transcript}{base} ||= $feature;
+    }
+  }
+  # get rid of transcripts without exons
+  foreach (keys %transcripts) {
+    delete $transcripts{$_} unless exists $transcripts{$_}{exon}
+  }
+
+  # map the rest onto Ace::Sequence::Transcript objects
+  return map {Ace::Sequence::Transcript->new($transcripts{$_})} keys %transcripts;
+}
+
+# Reassemble clones from clone left and right ends
+sub clones {
+  my $self = shift;
+  my @clones = $self->features('Clone_left_end','Clone_right_end','Sequence');
+  my %clones;
+  return unless @clones;
+  return $self->_make_clones(\@clones);
+}
+
+sub _make_clones {
+  my $self = shift;
+  my $features = shift;
+
+  my (%clones,@canonical_clones);
+  my $start_label = $self->strand < 0 ? 'end' : 'start';
+  my $end_label   = $self->strand < 0 ? 'start' : 'end';
+  for my $feature (@$features) {
+    $clones{$feature->info}{$start_label} = $feature->start if $feature->type eq 'Clone_left_end';
+    $clones{$feature->info}{$end_label}   = $feature->start if $feature->type eq 'Clone_right_end';
+
+    if ($feature->type eq 'Sequence') {
+      my $info = $feature->info;
+      next if $info =~ /LINK|CHROMOSOME|\.\w+$/;
+      if ($info->Genomic_canonical(0)) {
+	push (@canonical_clones,$info->Clone) if $info->Clone;
+      }
+    }
+  }
+
+  foreach (@canonical_clones) {
+    $clones{$_} ||= {};
+  }
+
+  my @features;
+  my ($r,$r_offset,$r_strand) = $self->refseq;
+  my $parent = $self->parent;
+  my $abs = $self->absolute;
+  if ($abs) {
+    $r_offset  = 0;
+    $r = $parent;
+    $r_strand = '+1';
+  }
+
+  # BAD HACK ALERT.  WE DON'T KNOW WHERE THE LEFT END OF THE CLONE IS SO WE USE
+  # THE MAGIC NUMBER -99_999_999 to mean "off left end" and
+  # +99_999_999 to mean "off right end"
+  for my $clone (keys %clones) {
+    my $start = $clones{$clone}{start} || -99_999_999;
+    my $end   = $clones{$clone}{end}   || +99_999_999;
+    my $phony_gff = join "\t",($parent,'Clone','structural',$start,$end,'.','.','.',qq(Clone "$clone"));
+    push @features,Ace::Sequence::Feature->new($parent,$r,$r_offset,$r_strand,$abs,$phony_gff);
+  }
+  return @features;
+}
+
+# Assemble a list of "GappedAlignment" objects. These objects
+# contain a list of aligned segments.
+sub alignments {
+  my $self    = shift;
+  my @subtypes = @_;
+  my @types = map { "similarity:$_" } @subtypes;
+  push @types,'similarity' unless @types;
+  return $self->features(@types);
+}
+
+sub _make_alignments {
+  my $self = shift;
+  my $features = shift;
+  require Ace::Sequence::GappedAlignment;
+
+  my %homol;
+
+  for my $feature (@$features) {
+    next unless $feature->type eq 'similarity';
+    my $target = $feature->info;
+    push @{$homol{$target}},$feature;
+  }
+
+  # map onto Ace::Sequence::GappedAlignment objects
+  return map {Ace::Sequence::GappedAlignment->new($homol{$_})} keys %homol;
+}
+
 
 # return list of features quickly
 sub feature_list {
   my $self = shift;
   return $self->{'feature_list'} if $self->{'feature_list'};
-  return unless my $raw = $self->_query(undef,'seqfeatures -version 2 -list');
+  return unless my $raw = $self->_query('seqfeatures -version 2 -list');
   return $self->{'feature_list'} = Ace::Sequence::FeatureList->new($raw);
 }
 
@@ -253,19 +489,29 @@ sub feature_list {
 sub transformGFF {
   my $self = shift;
   my $gff = shift;
-  my $offset = $self->offset;
-  my $reversed = $self->gff_reversed;
-  return unless $offset || $reversed;
-  
-  $offset += 2 if $reversed; # nasty 1-based indexing...
+  my $parent  = $self->parent;
+  my $strand  = $self->{strand};
+  my $source  = $self->source;
+  my ($ref_source,$ref_offset,$ref_strand)  = $self->refseq;
+  $ref_source ||= $source;
+  $ref_strand ||= $strand;
 
-  # find anything that looks like a numeric field and subtract offset from it
-  $$gff =~ s/\t(-?\d+)/"\t" . ($1 - $offset)/eg;
+  if ($ref_strand > 0) {
+    my $o = defined($ref_offset) ? $ref_offset : ($self->p_offset + $self->offset);
+    # find anything that looks like a numeric field and subtract offset from it
+    $$gff =~ s/(?<!\")\s+(-?\d+)\s+(-?\d+)/"\t" . ($1 - $o) . "\t" . ($2 - $o)/eg;
+    $$gff =~ s/^$parent/$source/mg;
+    $$gff =~ s/\#\#sequence-region\s+\S+/##sequence-region $ref_source/m;
+    $$gff =~ s/FMAP_FEATURES\s+"\S+"/FMAP_FEATURES "$ref_source"/m;
+    return;
+  } else {  # strand eq '-'
+    my $o = defined($ref_offset) ? (2 + $ref_offset) : (2 + $self->p_offset - $self->offset);
+    $$gff =~ s/(?<!\")\s+(-?\d+)\s+(-?\d+)\s+([.\d]+)\s+(\S)/join "\t",'',$o-$2,$o-$1,$3,$4 eq '+'? '-' : '+'/eg;    
+    $$gff =~ s/^$parent/$source/mg;
+    $$gff =~ s/\#\#sequence-region\s+\S+\s+(-?\d+)\s+(-?\d+)/"##sequence-region $ref_source " . ($o - $2) . ' ' . ($o - $1) . ' (reversed)'/em;
+    $$gff =~ s/FMAP_FEATURES\s+"\S+"\s+(-?\d+)\s+(-?\d+)/"FMAP_FEATURES \"$ref_source\" " . ($o - $2) . ' ' . ($o - $1) . ' (reversed)'/em;
+  }
 
-  # if we're reversed, then swap first and second postion fields and change strand
-  return unless $reversed;
-  $$gff =~ s/\t(-?\d+)\t(-?\d+)\t(\S)\t(\S)/join "\t",'',0-$2,0-$1,$3,$4 eq '+'? '-' : '+'/eg;
-  $$gff =~ s/(\#\#sequence-region.+)$/$1(reversed)/m; # warn them!
 }
 
 # return a name for the object
@@ -273,203 +519,202 @@ sub name {
   return shift->source_seq->name;
 }
 
-# strand
-sub strand {
-  return $_[0]->reversed ? '-' : '+';
-}
-
-# user API routine to get the parent of the sequence as an
-# Ace::Sequence object.
-sub get_parent {
-  my $self = shift;
-  my $obj = $self->source_seq;  # always an Ace::Object... I hope
-  my $prev;
-  while ($obj) {
-    $prev = $obj;
-    $obj = _get_source($obj);
-  }
-  return unless $prev;
-  return ref($self)->new($prev);
-}
-
-# return all children of this sequence
-sub get_children {
-  my $self = shift;
-  my $obj = $self->source_seq;  # always an Ace::Object... I hope
-  my @subs = $obj->S_Child(2);
-  @subs    = $obj->Subsequence unless @subs;
-  return map { $_->fetch } @subs;
-}
-
-# length in absolute terms
-sub abslength {
-  return CORE::abs($_[0]->length);
+# for compatibility with Ace::Sequence::Feature
+sub info {
+  return shift->source_seq;
 }
 
 ###################### internal functions #################
 # not necessarily object-oriented!!
 
-# this crucial routine traverses the parents upwards until it
-# finds an object that is suitable for using as the reference
-# in the call to seqfeatures.  Returns a three-element list consisting
-# of the reference sequence, the offset from the reference sequence
-# to the start of the requested sequence (0-based indexing), and the
-# length of the sequence (which may be negative, if its orientation is
-# reversed).  If $refseq is provided as the second argument, then it
-# forces the subroutine to use that coordinate system.
-sub _get_refseq {
-  local $^W = 0;
-  my ($obj,$refseq) = @_;
-  my $o = $obj;
-  my ($parent,$offset,$length,$source_reversed) = (undef,0,0,0); # to avoid uninitialized variable warnings
-
-  # If we're passed a Sequence::Feature, then we can pull the
-  # information we need right out of the fields
-  if ( $obj->isa('Ace::Sequence') ) {
-    $o      = $obj->isa('Ace::Sequence::Feature') ? $obj->parent->parent : $obj->source_seq;
-    $parent = $obj->isa('Ace::Sequence::Feature') ? $o : $obj->parent;
-    unless ($obj->abs_reversed) {
-      $offset = $obj->abs_start - 1;
-      $length = $obj->abs_end - $obj->abs_start + 1;
-    } else {
-      $offset = $obj->abs_end - 1;
-      $length = $obj->abs_start - $obj->abs_end - 1;
-    }
-  } elsif ($obj->isa('Ace::Object')) {
-    ($parent,$offset,$length) = _traverse($obj);
-    $length -= 2 if $length < 0;  # to adjust for reversed sequences
-    $source_reversed++ if $length < 0 && $obj->class eq 'Sequence';
-  } else {
-    croak "Source sequence not an Ace::Object or an Ace::Sequence";
-  }
-
-  # if requesting a sequence that doesn't have a length, ask
-  # the server to help us out on this.  This is rather a hack
-  if (!$length and !defined($refseq)) {
-    my $gff = $obj->db->raw_query("gif seqget $parent -coords 1 2 ; seqfeatures -version 2 -feature Sequence");
-    my ($start,$end,$orientation) = $gff =~ /(\d+)\t(\d+)\t.\t([+-])\t\.\tSequence\s+"$parent"/m;
-    $offset = $start-1;
-    $length = $end-$start+1;
-  }
-
-  if (defined $refseq) {
-    my $db = $obj->db;
-    $refseq = $db->fetch('Sequence'=>$refseq) unless ref $refseq;
-    return unless $refseq;
-    croak "Reference sequence must be an actual Sequence object"  unless $refseq->class eq 'Sequence';
-    
-    # find coordinates of $parent relative to coordinates of refseq
-    my (@coords) = ('-coords',$offset+1,$offset+2);
-    my $gff = $db->raw_query("gif seqget $parent ; seqfeatures  @coords -refseq $refseq -version 2 -feature DUMMY");
-    my ($start,$end,$reverse) = $gff =~ /^\#\#sequence-region \S+ ([\d-]+) ([\d-]+)\s*?(\S*)$/m;
-    unless ($start) {
-      Ace->error('Sequence not contained within reference sequence');  # BIG assumption
-      return;
-    }
-    $offset = $start - 1;
-    $parent = $refseq;
-  }
-
-  return ($o,$parent,$offset,$length,$source_reversed);
-}
-
-# get sequence, offset and length for use as source
-sub _traverse {
+# return parent, parent offset and strand
+sub find_parent {
   my $obj = shift;
 
-  my ($offset,$length,$prev) = (0,0,undef);
+  # first, if we are passed an Ace::Sequence, then we can inherit
+  # these settings directly
+  return (@{$obj}{qw(parent p_offset length)},$obj->r_strand)
+    if $obj->isa('Ace::Sequence');
 
-  # if object is a Sequence, and is associated with a DNA, then we
-  # just return it
-  if ( ($obj->class eq 'Sequence') && ( defined ($length = $obj->get(DNA=>2))) ) {
-    return ($obj,0,$length);
-  }
+  # otherwise, if we are passed an Ace::Object, then we must
+  # traverse upwards until we find a suitable parent
+  return _traverse($obj) if $obj->isa('Ace::Object');
 
-  # traverse upwards until we find a valid sequence object
-  # that we can use for a call to seqfeatures
-  for ($prev=$obj,my $o=_get_source($obj); 
-       $o && !$length;
-       $prev=$o,$o=_get_source($o)) {
-    my $seq = _get_child($o,$prev);
-    my ($start,$end) = $seq->row(1);
-    $length ||= $end - $start + 1;
-    $offset += $start - 1;
-  }
-
-  return ( $obj,0,$length ) if $obj->class eq 'Sequence';
-
-  # Unfortunately, traversal  will fail in the event that a top-level sequence
-  # is requested (like a whole CHROMOSOME).  In this case, we try to
-  # derive its size from its DNA first, and if that doesn't work, from its
-  # map information
-#  $length ||= $obj->get(DNA=>2);
-
-  unless ($length) {
-    my @pieces = $obj->get(S_Child=>2);
-    @pieces    = $obj->get('Subsequence') unless @pieces;
-    foreach (@pieces) {
-      my ($start,$end) = $_->row(1);
-      $length = $start if $length < $start;
-      $length = $end   if $length < $end;
-    }
-    $offset = 0;
-    $prev   = $obj;
-  }
-  return ($prev,$offset,$length);
+  # otherwise, we don't know what to do...
+  croak "Source sequence not an Ace::Object or an Ace::Sequence";
 }
 
-# this nasty routine is necessary in order to handle the
-# transition from the magic Source tag to the magic
-# S_Parent tag
-sub _get_source {
+sub _get_parent {
   my $obj = shift;
+  # ** DANGER DANGER WILL ROBINSON! **
+  # This is an experiment in caching parents to speed lookups.  Probably eats memory voraciously.
+  return $CACHE{$obj} if CACHE && exists $CACHE{$obj};
   my $p = $obj->get(S_Parent=>2)|| $obj->get(Source=>1);
   return unless $p;
-  return $p->fetch;
+  return CACHE ? $CACHE{$obj} = $p->fetch 
+               : $p->fetch;
 }
 
-# This nasty routine is responsible for finding where the
-# child sequence is in a parent.  handles backward compatibility
-# with Subsequence and S_Child
-sub _get_child {
-  my ($obj,$target) = @_;
-  my @subs = $obj->get(S_Child => 2);
-  @subs    = $obj->get('Subsequence') unless @subs;
-  my @s = grep $target eq $_,@subs;
-  return $s[0]
+sub _get_children {
+  my $obj = shift;
+  my @pieces = $obj->get(S_Child=>2);
+  return @pieces if @pieces;
+  return @pieces = $obj->get('Subsequence');
 }
+
+# get sequence, offset and strand of topmost container
+sub _traverse {
+  my $obj = shift;
+  my ($offset,$length,$phase,$prev) = (0,0,1,undef);
+
+  # work our way through parents until we find a Sequence object that we can use for gif seqget calls
+  $prev = $obj;
+  if ($prev->class ne 'Sequence') {
+    for ( $prev=$obj, my $o=_get_parent($obj); $prev->class ne 'Sequence' && $o; $prev=$o,$o=_get_parent($o) ) {
+      my @subs = _get_children($o);
+      my ($seq) = grep $prev eq $_,@subs;
+      my ($start,$end) = $seq->row(1);
+      $length ||= abs($end - $start) + 1;
+      $offset += $start-1;    # offset to beginning of sequence
+      $phase  *= $start < $end ? +1 : -1;
+    }
+  }
+
+  # if we have not traversed up to a Sequence object, then we're screwed.
+  unless ($prev->class eq 'Sequence') {
+    Ace->error("$obj has no map position");
+    return;
+  }
+
+  # invoke seqget to find the top-level container for this sequence
+  my ($tl,$tl_start,$tl_end) = _get_toplevel($prev);
+
+  # make it an object
+  $tl = ref($obj)->new(-name=>$tl,-class=>'Sequence',-db=>$obj->db);
+
+  $offset += $tl_start - 1;  # offset to beginning of toplevel
+  $length ||= abs($tl_end - $tl_start) + 1;
+  $phase  *= $tl_start < $tl_end ? +1 : -1;
+
+  return ($tl,$offset,$phase < 0 ? ($length,'-1') : ($length,'+1') ) if $length;
+}
+
+sub _get_toplevel {
+  my $seq = shift;
+
+  my $gff = $seq->db->raw_query("gif seqget $seq -coords 1 2 ; seqfeatures -version 2 -feature Sequence");
+  my $seq_strand = $gff =~ /^\#\#sequence-region.+\(reversed\)/m ? '-' : '+';
+
+  my ($tl,$tl_strand,$tl_start,$tl_end);
+  my $tl_length = 0;
+  my $length    = 0;
+
+  foreach (split "\n",$gff) {  # find largest sequence to use as reference
+    next if /^(\000|\#|\/\/)/;
+    my (undef,undef,undef,$s,$e,undef,$str,undef,$info) = split "\t";
+    my ($ref) = $info =~ /"([^\"]+)"/;
+    $length = $e - $s + 1 if $ref eq $seq;  # capture length if we don't have it already
+    if (($e - $s + 1 > $tl_length) and ($str eq $seq_strand)) { # get longest sequence
+      $tl_length = $e - $s + 1;
+      ($tl_start,$tl_end) = ($s,$e);
+      $tl = $ref;
+    }
+  }
+
+  return ($tl,$tl_end,$tl_end - $length + 1)         if $seq_strand eq '-';
+  return ($tl,2 - $tl_start,1 - $tl_start + $length) if $seq_strand eq '+';
+}
+
+# create subroutine that filters GFF files for certain feature types
+sub _make_filter {
+  my $self = shift;
+
+  # parse out the filter
+  my %filter;
+  foreach (@_) {
+    my ($type,$filter) = split(':',$_,2);
+    if (lc($type) eq 'transcript') {
+      @filter{'exon','intron','Sequence','cds'} = ([undef],[undef],[undef],[undef]);
+    } elsif (lc($type) eq 'clone') {
+      @filter{'Clone_left_end','Clone_right_end','Sequence'} = ([undef],[undef],[undef]);
+    } else {
+      push @{$filter{$type}},$filter;
+    }
+  }
+
+  # create pattern-match sub
+  my $sub;
+  my $promiscuous;  # indicates that there is a subtype without a type
+
+  if (%filter) {
+    my $s = "sub { my \@d = split(\"\\t\",\$_[0]);\n";
+    for my $type (keys %filter) {
+      my $expr;
+      my $subtypes = $filter{$type};
+      if ($type ne '') {
+	for my $st (@$subtypes) {
+	  $expr .= defined $st ? "return 1 if \$d[2]=~/$type/i && \$d[1]=~/$st/i;\n"
+	                       : "return 1 if \$d[2]=~/$type/i;\n"
+	}
+      } else {  # no type, only subtypes
+	$promiscuous++;
+	for my $st (@$subtypes) {
+	  next unless defined $st;
+	  $expr .= "return 1 if \$d[1]=~/$st/i;\n";
+	}
+      }
+      $s .= $expr;
+    }
+    $s .= "return;\n }";
+
+    $sub = eval $s;
+    croak $@ if $@;
+  } else {
+    $sub = sub { 1; }
+  }
+  return ($sub,$promiscuous ? [] : [keys %filter]);
+}
+
+# turn a GFF file and a filter into a list of Ace::Sequence::Feature objects
+sub _make_features {
+  my $self = shift;
+  my ($gff,$filter) = @_;
+
+  my ($r,$r_offset,$r_strand) = $self->refseq;
+  my $parent = $self->parent;
+  my $abs    = $self->absolute;
+  if ($abs) {
+    $r_offset  = 0;
+    $r = $parent;
+    $r_strand = '+1';
+  }
+  my @features = map {Ace::Sequence::Feature->new($parent,$r,$r_offset,$r_strand,$abs,$_)}
+                 grep !m@^(?:\#|//)@ && $filter->($_),split("\n",$gff);
+}
+
 
 # low level GFF call, no changing absolute to relative coordinates
 sub _gff {
   my $self = shift;
-  my $db = shift;
-  my $data = $self->_query($db,"seqfeatures -version 2 @_");
+  my ($opt,$db) = @_;
+  my $data = $self->_query("seqfeatures -version 2 $opt",$db);
   $data =~ s/\0+\Z//;
   return $data; #blasted nulls!
 }
 
-# shortcut for running a query
+# shortcut for running a gif query
 sub _query {
   my $self = shift;
-  my $db = shift;
-  return unless $self->source_seq && ($db ||= $self->source_seq->db);
-
   my $command = shift;
-  my $name = $self->parent->name;
-  my $start = $self->start;
-  my $end   = $self->end;
-  ($start,$end) = ($end,$start) if $start > $end;  #flippity floppity
-  my $coord   = "-coords $start $end";
-  $command .= " -refseq $self->{'parent'}" if $self->{'norelative'};
+  my $db      = shift || $self->db;
 
-  # corrects a ?bug in ace server
-  if ( $self->{'source_reversed'} && !$self->{'norelative'} ) {
-    my $length = $self->{'source_reversed'};
-    my $t_coord   = "-coords 1 $length";
-    return $db->raw_query("gif seqget $name $t_coord ; $command $coord");
-  } else {
-    return $db->raw_query("gif seqget $name $coord ; $command");
-  }
+  my $parent = $self->parent;
+  my $start = $self->start(1);
+  my $end   = $self->end(1);
+  ($start,$end) = ($end,$start) if $start > $end;  #flippity floppity
+
+  my $coord   = "-coords $start $end";
+  return $db->raw_query("gif seqget $parent $coord ; $command $coord");
 }
 
 # utility function -- reverse complement
@@ -649,7 +894,7 @@ failure to provide required arguments, cause a fatal error.
 
 When retrieving information from an I<Ace::Sequence>, the coordinate
 system is based on the sequence segment selected at object creation
-time.  That is, the "+" strand is the natural direction of the
+time.  That is, the "+1" strand is the natural direction of the
 I<Ace::Sequence> object, and base pair 1 is its first base pair.  This
 behavior can be overridden by providing a reference sequence to the
 new() method, in which case the orientation and position of the
@@ -721,11 +966,16 @@ that it will return an I<Ace::Sequence> in some cases, and an
 I<Ace::Object> in others.  Use get_parent() to traverse upwards
 through a uniform series of I<Ace::Sequence> objects upwards.
 
-=head2 ref_seq()
+=head2 refseq([$seq])
 
-  $refseq = $seq->ref_seq;
+  $refseq = $seq->refseq;
 
 Returns the reference sequence, if one is defined.
+
+  $seq->refseq($new_ref);
+
+Set the reference sequence. The reference sequence must share the same
+ancestor with $seq.
 
 =head2 start()
 
@@ -751,7 +1001,7 @@ beginning of the sequence is to the left of the beginning of the
 source sequence.
 
 =head2 length()
-  
+
   $length = $seq->length;
 
 The length of this sequence, in base pairs.  The length may be
@@ -764,6 +1014,18 @@ the sequence length.
   $length = $seq->abslength;
 
 Return the absolute value of the length of the sequence.
+
+=head2 strand()
+
+  $strand = $seq->strand;
+
+Returns +1 for a sequence oriented in the natural direction of the
+genomic reference sequence, or -1 otherwise.
+
+=head2 reversed()
+
+Returns true if the segment is reversed relative to the canonical
+genomic direction.  This is the same as $seq->strand < 0.
 
 =head2 dna()
 
@@ -844,6 +1106,20 @@ less overhead than features().
 
 See L<Ace::Feature::List> for more details.
 
+=head2 transcripts()
+
+This returns a list of Ace::Sequence::Transcript objects, which are
+specializations of Ace::Sequence::Feature.  See L<Ace::Sequence::Transcript>
+for details.
+
+=head2 clones()
+
+This returns a list of Ace::Sequence::Feature objects containing
+reconstructed clones.  This is a nasty hack, because ACEDB currently
+records clone ends, but not the clones themselves, meaning that we
+will not always know both ends of the clone.  In this case the missing
+end has a synthetic position of -99,999,999 or +99,999,999.  Sorry.
+
 =head2 gff()
 
   $gff = $seq->gff();
@@ -896,17 +1172,29 @@ but it returns a I<GFF::GeneFeatureSet> object from the GFF.pm
 module.  If the GFF module is not installed, this method will generate 
 a fatal error.
 
-=head2 abs()
+=head2 absolute()
 
- $abs = $seq->abs;
- $abs = $seq->abs(1);
+ $abs = $seq->absolute;
+ $abs = $seq->absolute(1);
 
 This method controls whether the coordinates of features are returned
 in absolute or relative coordinates.  "Absolute" coordinates are
 relative to the underlying source or reference sequence.  "Relative"
 coordinates are relative to the I<Ace::Sequence> object.  By default,
 coordinates are relative unless new() was provided with a reference
-sequence.  This default can be examined and changed using abs().
+sequence.  This default can be examined and changed using absolute().
+
+=head2 automerge()
+
+  $merge = $seq->automerge;
+  $seq->automerge(0);
+
+This method controls whether groups of features will automatically be
+merged together by the features() call.  If true (the default), then
+the left and right end of clones will be merged into "clone" features,
+introns, exons and CDS entries will be merged into
+Ace::Sequence::Transcript objects, and similarity entries will be
+merged into Ace::Sequence::GappedAlignment objects.
 
 =head2 db()
 
@@ -921,7 +1209,7 @@ L<Ace::Sequence::FeatureList>, L<GFF>
 
 =head1 AUTHOR
 
-Lincoln Stein <lstein@w3.org> with extensive help from Jean
+Lincoln Stein <lstein@cshl.org> with extensive help from Jean
 Thierry-Mieg <mieg@kaa.crbm.cnrs-mop.fr>
 
 Many thanks to David Block <dblock@gene.pbi.nrc.ca> for finding and
@@ -936,3 +1224,42 @@ disclaimers of warranty.
 =cut
 
 __END__
+
+# fragments
+
+# get sequence, offset and strand of topmost container
+# sub _traverse {
+#   my $obj = shift;
+
+#   my ($offset,$length,$phase,$prev) = (0,0,1,undef);
+  
+#   for ( $prev=$obj, my $o=_get_parent($obj); $o; $prev=$o,$o=_get_parent($o) ) {
+#     my @subs = _get_children($o);
+#     my ($seq) = grep $prev eq $_,@subs;
+#     my ($start,$end) = $seq->row(1);
+#     $length ||= $end - $start + 1;
+#     $offset += $start-1;    # offset to beginning of sequence
+#     $phase  *= $start < $end ? +1 : -1;
+#   }
+  
+#   return ($prev,$offset,$phase < 0 ? (abs($length)+2,'-') : (abs($length),'+') ) if $length;
+
+#   # Traversal  will fail in the event that a top-level sequence
+#   # is requested (like a whole CHROMOSOME).  In this case, we try to
+#   # derive its size from its DNA first, and if that doesn't work, from its
+#   # map information
+#   $length ||= $obj->get(DNA=>2);
+#   return ($prev,0,$length,'+') if $length > 0;
+
+#   # now try to reassemble map information
+#   my @pieces = _get_children($obj);
+#   foreach (@pieces) {
+#       my ($start,$end) = $_->row(1);
+#       $length = $start if $length < $start;
+#       $length = $end   if $length < $end;
+#     }
+#   $offset = 0;
+#   $prev   = $obj;
+#   return ($obj,0,abs($length),'+');
+# }
+

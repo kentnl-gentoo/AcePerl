@@ -7,11 +7,10 @@ use lib '../blib/lib','../blib/arch';
 use constant HOST => $ENV{ACEDB_HOST} || 'stein.cshl.org';
 use constant PORT => $ENV{ACEDB_PORT} || 2005;
 
-BEGIN {$| = 1; print "1..40\n"; }
+BEGIN {$| = 1; print "1..54\n"; }
 END {print "not ok 1\n" unless $loaded;}
 use Ace::Sequence;
 $loaded = 1;
-# print STDERR "expect tests 14-16 to fail\n";
 
 print "ok 1\n";
 
@@ -43,7 +42,7 @@ test(7,$zk154s = Ace::Sequence->new(-seq=>$clone,
 test(8,$zk154s->start==101,"start() failure (2)");
 test(9,$zk154s->end==200,"end() failure (2)");
 
-test(10,$zk154s->length==100,"length() failure");
+test(10,$zk154s->length == 100,"length() failure");
 test(11,length($zk154s->dna)==100,"dna() failure");
 
 test(12,$zk154r = Ace::Sequence->new(-seq=>$clone,
@@ -51,8 +50,8 @@ test(12,$zk154r = Ace::Sequence->new(-seq=>$clone,
 				     -Length => -100),"new() failure");
 test(13,$zk154r->start==101,"start() failure (3)");
 test(14,$zk154r->end==2,"end() failure (3)");
-test(15,$zk154r->length==-100,"length() failure");
-test(16,length($zk154r->dna)==100,"dna() failure");
+test(15,$zk154r->length == -100,"length() failure");
+test(16,length($zk154r->dna) == 100,"dna() failure");
 # print "ok 14 # Skip, persistent off-by-one errors\n";
 # print "ok 15 # Skip, persistent off-by-one errors\n";
 # print "ok 16 # Skip, persistent off-by-one errors\n";
@@ -87,7 +86,7 @@ test(28,length($features[0]->dna) == 128,'dna() error');
 test(29,$gene = $db->fetch(Predicted_gene=>'ZK154.3'),"fetch failure");
 test(30,$zk154_3 = Ace::Sequence->new($gene),"new() failure");
 test(31,$zk154_3->start > 0,"start() failure");
-test(32,$zk154_3->end-$zk154_3->start-1 == $zk154_3->length,"length() failure");
+test(32,$zk154_3->end-$zk154_3->start+1 == $zk154_3->length,"length() failure");
 @features = $zk154_3->features('exon');
 @features = sort { $a->start <=> $b->start; }  @features;
 test(33,$features[0]->start == 1,'features() error');
@@ -102,7 +101,37 @@ test(36,substr($zk154->dna,1,10) eq $zk154_3->dna,'offset error');
 
 # Test that absolute coordinates are working
 test(37,$zk154_3 = Ace::Sequence->new(-seq=>$gene,-refseq=>'CHROMOSOME_X'),'absolute coordinate error');
-test(38,abs($zk154_3->end-$zk154_3->start + 1) == 1596,'absolute coordinate error');
-@features = sort {$a->start <=> $b->start } $zk154_3->features('exon');
+test(38,abs($zk154_3->end-$zk154_3->start) + 1 == 1596,'absolute coordinate error');
+@features = sort {$b->start <=> $a->start } $zk154_3->features('exon');
 test(39,@features,'absolute coordinate error');
-test(40,abs($features[$#features]->end-$features[$#features]->start)+1 == 57,'absolute coordinate error');
+test(40,abs($features[0]->end-$features[0]->start) + 1 == 57,'absolute coordinate error');
+$features[0]->refseq('ZK154.3');
+test(41,$features[0]->start  == 1,'absolute coordinate error');
+test(42,$features[0]->end    == 57,'absolute coordinate error');
+test(43,$features[0]->length == 57,'absolute coordinate error');
+
+# Test the Ace::Sequence::Gene thing
+$zk154 = Ace::Sequence->new(-seq=>'ZK154',-db=>$db);
+@genes = $zk154->transcripts;
+test(44,scalar(@genes),'gene fetch error');
+$forward = (grep {$_->strand > 0} @genes)[0];
+$reverse = (grep {$_->strand < 0} @genes)[0];
+test(45,$forward && $reverse,'failed to find forward and reverse genes');
+@exons1 = $forward->exons;
+test(46,scalar @exons1,'failed to find exons on forward gene');
+$forward->relative(1);
+@exons2 = $forward->exons;
+test(47,scalar @exons2,'failed to find relative exons on forward gene');
+test(48,$exons2[0]->start == 1,"relative exons on forward gene don't start with 1");
+test(49,$exons1[0]->dna eq $exons2[0]->dna,"absolute and relative exons don't match");
+
+@exons1 = $reverse->exons;
+test(50,scalar @exons1,'failed to find exons on reverse gene');
+$reverse->relative(1);
+@exons2 = $reverse->exons;
+test(51,scalar @exons2,'failed to find relative exons on reverse gene');
+test(52,$exons2[0]->start == 1,"relative exons on reverse gene don't start with 1");
+test(53,$exons1[-1]->dna eq $exons2[0]->dna,"absolute and relative exons don't match (1)");
+test(54,$exons1[0]->dna eq $exons2[-1]->dna,"absolute and relative exons don't match (2)");
+
+

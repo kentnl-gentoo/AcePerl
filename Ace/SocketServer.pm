@@ -2,6 +2,7 @@ package Ace::SocketServer;
 
 require 5.004;
 use strict;
+use Carp 'croak','cluck';
 use Ace qw(rearrange STATUS_WAITING STATUS_PENDING STATUS_ERROR);
 use IO::Socket;
 use Digest::MD5 'md5_hex';
@@ -21,7 +22,7 @@ use constant ACESERV_MSGDATA  => "ACESERV_MSGDATA";
 use constant WORDORDER_MAGIC => 0x12345678;
 
 # Server only, it may just be sending or a reply or it may be sending an
-# instruction, such as "operation refused".                             
+# instruction, such as "operation refused".
 use constant ACESERV_MSGOK     => "ACESERV_MSGOK";
 use constant ACESERV_MSGENCORE => "ACESERV_MSGENCORE";
 use constant ACESERV_MSGFAIL   => "ACESERV_MSGFAIL";
@@ -51,10 +52,12 @@ sub connect {
 sub DESTROY {
   my $self = shift;
   return if $self->{last_msg} eq ACESERV_MSGKILL;
-  $self->_send_msg('quit');
-  my ($msg,$body) = $self->_recv_msg('strip');
-  warn "Did not get expected ACESERV_MSGKILL message, got $msg instead" 
-    if defined($msg) and $msg ne ACESERV_MSGKILL;
+  if (1) {  # the following block crashes the server -- maybe?
+    $self->_send_msg('quit');
+    my ($msg,$body) = $self->_recv_msg('strip');
+    warn "Did not get expected ACESERV_MSGKILL message, got $msg instead" 
+      if defined($msg) and $msg ne ACESERV_MSGKILL;
+  }
 }
 
 sub encore { return shift->{encoring} }
@@ -80,12 +83,16 @@ sub read {
   return _error("No pending query") unless $self->status == STATUS_PENDING;
   $self->_do_encore || return if $self->encore;
   # call select() here to time out
+
   if ($self->{timeout}) {
-    my $rdr = '';
-    vec($rdr,fileno($self->{socket}),1) = 1;
-    return _error("Query timed out") unless select($rdr,undef,undef,$self->{timeout});
+      my $rdr = '';
+      vec($rdr,fileno($self->{socket}),1) = 1;
+      my $result = select($rdr,undef,undef,$self->{timeout});
+      return _error("Query timed out") unless $result;
   }
+
   my ($msg,$body) = $self->_recv_msg;
+  return unless defined $msg;
   $msg =~ s/\0.+$//;  # socketserver bug workaround: get rid of junk in message
   if ($msg eq ACESERV_MSGOK or $msg eq ACESERV_MSGFAIL) {
     $self->{status}   = STATUS_WAITING;
@@ -164,7 +171,12 @@ sub _recv_msg {
   my $strip_null = shift;
   return unless my $sock = $self->{socket};
   my ($header,$body);
-  return unless CORE::read($sock,$header,HEADER_LEN);
+  my $bytes = CORE::read($sock,$header,HEADER_LEN);
+  unless ($bytes > 0) {
+    cluck "Connection closed by remote server: $!";
+    $self->{status} = STATUS_ERROR;
+    return _error("Connection closed by remote server: $!");
+  }
   my ($magic,$length,$junk1,$clientID,$junk2,$msg) = unpack HEADER,$header;
   $self->{client_id} ||= $clientID;
   $msg =~ s/\0*$//;
