@@ -112,7 +112,7 @@ sub offset { return $_[0]->{'offset'}; }
 sub end  {  
   return $_[0]->{'offset'} + CORE::abs($_[0]->{'length'}) if $_[0]->{'source_reversed'}; #special case
   my $end = $_[0]->{'offset'} + $_[0]->{'length'};
-#  $end +=2 if $_[0]->reversed;
+  $end +=2 if $_[0]->reversed;
   return $end;
 }
 
@@ -333,7 +333,7 @@ sub _get_refseq {
       $length = $obj->abs_end - $obj->abs_start + 1;
     } else {
       $offset = $obj->abs_end - 1;
-      $length = $obj->abs_start - $obj->abs_end + 1;
+      $length = $obj->abs_start - $obj->abs_end - 1;
     }
   } elsif ($obj->isa('Ace::Object')) {
     ($parent,$offset,$length) = _traverse($obj);
@@ -341,6 +341,15 @@ sub _get_refseq {
     $source_reversed++ if $length < 0 && $obj->class eq 'Sequence';
   } else {
     croak "Source sequence not an Ace::Object or an Ace::Sequence";
+  }
+
+  # if requesting a sequence that doesn't have a length, ask
+  # the server to help us out on this.  This is rather a hack
+  if (!$length and !defined($refseq)) {
+    my $gff = $obj->db->raw_query("gif seqget $parent -coords 1 2 ; seqfeatures -version 2 -feature Sequence");
+    my ($start,$end,$orientation) = $gff =~ /(\d+)\t(\d+)\t.\t([+-])\t\.\tSequence\s+"$parent"/m;
+    $offset = $start-1;
+    $length = $end-$start+1;
   }
 
   if (defined $refseq) {
@@ -914,6 +923,9 @@ L<Ace::Sequence::FeatureList>, L<GFF>
 
 Lincoln Stein <lstein@w3.org> with extensive help from Jean
 Thierry-Mieg <mieg@kaa.crbm.cnrs-mop.fr>
+
+Many thanks to David Block <dblock@gene.pbi.nrc.ca> for finding and
+fixing the nasty off-by-one errors.
 
 Copyright (c) 1999, Lincoln D. Stein
 

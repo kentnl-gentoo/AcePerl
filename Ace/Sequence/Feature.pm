@@ -41,6 +41,7 @@ sub parent { $_[0]->{'parent'}; }
 sub source_seq { $_[0]->parent; }
 sub db     { return $_[0]->{'db'} ||= $_[0]->parent->db($_[0]->db_id); }
 sub abs2rel { 
+  # CURIOUS FEATURE WARNING: DB says that the 2+ here doesn't effect anything.
   $_[0]->parent->gff_reversed ? 2 + $_[0]->parent->offset - $_[1] : $_[1] - $_[0]->parent->offset; 
 }
 
@@ -106,7 +107,8 @@ sub asString {
   ($name) = $name =~ /\"([^\"]+)\"/; # get rid of quote
   my $start = $self->start;
   my $end = $self->end;
-  return "$type:$name/$start-$end";
+  return $self->strand eq '-' ? "$type:$name/$end-$start" 
+                              : "$type:$name/$start-$end";
 #  return "$name:$type [$start-$end]";
 }
 

@@ -2,7 +2,7 @@ package Ace::Object;
 use strict;
 use Carp;
 
-# $Id: Object.pm,v 1.18 2000/04/26 17:51:39 lstein Exp $
+# $Id: Object.pm,v 1.23 2000/07/14 20:24:57 lstein Exp $
 
 use overload 
     '""'       => 'name',
@@ -11,6 +11,13 @@ use overload
     'fallback' =>' TRUE';
 use vars qw($AUTOLOAD $DEFAULT_WIDTH %MO $VERSION);
 use Ace 1.50 qw(:DEFAULT rearrange);
+
+# if set to 1, will conflate tags in XML output
+use constant XML_COLLAPSE_TAGS => 1;
+use constant XML_SUPPRESS_CONTENT=>1;
+use constant XML_SUPPRESS_CLASS=>1;
+use constant XML_SUPPRESS_VALUE=>0;
+use constant XML_SUPPRESS_TIMESTAMPS=>0;
 
 require AutoLoader;
 
@@ -236,7 +243,7 @@ sub search {
 	# acedb's query mechanism to fetch the subobject.  This is a
 	# big win for large objects.  ...However, we have to disable
 	# this feature if timestamps are active.
-	unless ($self->filled || $self->{'db'}->timestamps) {
+	unless ($self->filled) {
 	  my $subobject = $self->newFromText(
 					     $self->{'db'}->show($self->class,$self->name,$tag),
 					     $self->{'db'}
@@ -288,7 +295,7 @@ sub search {
 	$pos = $subtag;
       } else {  # position on subtag and search again
 	return $t->fetch->search($subtag,$pos) 
-	  if $t->isObject  || ($t->right && $t->right->isObject);
+	  if $t->isObject  || (defined($t->right) and $t->right->isObject);
 	return $t->search($subtag,$pos);
       }
     }
@@ -356,7 +363,7 @@ sub down {
 sub fetch {
     my ($self,$tag) = @_;
     $self = $self->search($tag) || return if defined $tag;
-    my $thing_to_pick = ($self->isTag && $self->right) ? $self->right : $self;
+    my $thing_to_pick = ($self->isTag and defined($self->right)) ? $self->right : $self;
     return $thing_to_pick->_clone;
 }
 
@@ -370,7 +377,7 @@ sub follow {
     return unless $self->db;
     return $self->fetch() unless $tag;
     my $class = $self->class;
-    my $name = Ace::AceDB->freeprotect($self->name);
+    my $name = Ace->freeprotect($self->name);
     return $self->db->fetch(-query=>"find $class $name ; follow $tag",
 			    '-filled'=>$filled);
 }
@@ -392,8 +399,8 @@ sub isTag {
 
 # return the most recent error message
 sub error {
-  $Ace::ERR=~s/\0//g;  # get rid of nulls
-  return $Ace::ERR;
+  $Ace::Error=~s/\0//g;  # get rid of nulls
+  return $Ace::Error;
 }
 
 ### Returns the object's model (as an Ace::Model object)
@@ -446,65 +453,45 @@ sub _parse {
   my $current_row = $self->{'.start_row'};
   my $db = $self->{'db'};
 
-  my $time = $self->{'.timestamp'} if $ts;
-
   for (my $r=$current_row+1; $r<=$self->{'.end_row'}; $r++) {
     next unless $raw->[$r][$col];
 
-    $time = $current_obj->{'.timestamp'} if $ts;
-
     my $obj_right = $self->_fromRaw($raw,$current_row,$col+1,$r-1,$db);
 
-    # timestamp and comment handling
+    # comment handling
     if ( defined($obj_right) ) {
       my ($t,$i);
       my $row = $current_row+1;
-      while ($obj_right->isTimestamp or $obj_right->isComment) {
+      while ($obj_right->isComment) {
 	$current_obj->comment($obj_right)   if $obj_right->isComment;
 	$t = $obj_right;
 	last unless $obj_right = $self->_fromRaw($raw,$row++,$col+1,$r-1,$db);
-	$obj_right->timestamp($t)   if $t->isTimestamp;
       } 
-      $obj_right->timestamp($time) if $ts && defined($obj_right) && !$obj_right->{'.timestamp'};
     }
     $current_obj->{'.right'} = $obj_right;
 
-    my $obj_down = $self->new(Ace::AceDB->split($raw->[$r][$col]),$db);
+    my ($class,$name,$timestamp) = Ace->split($raw->[$r][$col]);
+    my $obj_down = $self->new($class,$name,$db);
+    $obj_down->timestamp($timestamp) if $ts && $timestamp;
 
-    # timestamp handling / comments never occur at down pointers
-    if ($ts && defined($obj_down) ) {
-      ($time,$obj_down) = ($obj_down,$self->new(Ace::AceDB->split($raw->[++$r][$col]),$db))
-	if $obj_down->isTimestamp;
-      $obj_down->timestamp($time) if defined $time;
-    }
+    # comments never occur at down pointers
     $current_obj = $current_obj->{'.down'} = $obj_down;
     $current_row = $r;
   }
 
   my $obj_right = $self->_fromRaw($raw,$current_row,$col+1,$self->{'.end_row'},$db);
-  # timestamp and comment handling
+  # comment handling
   if (defined($obj_right)) {
     my ($t,$i);
     my $row = $current_row + 1;
-    while ($obj_right->isTimestamp || $obj_right->isComment) {
+    while ($obj_right->isComment) {
       $current_obj->comment($obj_right)   if $obj_right->isComment;
       $t = $obj_right;
       last unless defined($obj_right = $self->_fromRaw($raw,$row++,$col+1,$self->{'.end_row'},$db));
-      $obj_right->timestamp($t)   if $t->isTimestamp;
     }
-    $obj_right->timestamp($time) if $ts && defined($obj_right) && !$obj_right->{'.timestamp'};
   }
   $current_obj->{'.right'} = $obj_right;
-
-  # unstamped nodes take the timestamp on their right
-  $self->timestamp($self->{'.right'}->{'.timestamp'})
-    if $ts 
-      && !$self->{'.timestamp'} && defined($self->{'.right'}) 
-	&& $self->{'.right'}->{'.timestamp'};
-
-  foreach ( qw(.raw .start_row .end_row .col) ) {
-    delete $self->{$_};
-  }
+  delete @{$self}{qw[.raw .start_row .end_row .col]};
 }
 
 sub _fromRaw {
@@ -513,9 +500,10 @@ sub _fromRaw {
 
   my ($raw,$start_row,$col,$end_row,$db) = @_;
   return unless $raw->[$start_row][$col];
-  my ($class,$name) = Ace::AceDB->split($raw->[$start_row][$col]);
+  my ($class,$name,$ts) = Ace->split($raw->[$start_row][$col]);
   my $self = $pack->new($class,$name,$db,!($start_row || $col));
   @{$self}{qw(.raw .start_row .end_row .col db)} = ($raw,$start_row,$end_row,$col,$db);
+  $self->{'.timestamp'} = $ts if defined $ts;
   return $self;
 }
 
@@ -1200,6 +1188,14 @@ Here's a complete example:
 
    $object->asHTML(\&process_cell);
 
+=head2 asXML() method
+
+   $result = $object->asXML;
+
+asXML() returns a well-formed XML representation of the object.  The
+particular representation is still under discussion, so this feature
+is primarily for demonstration.
+
 =head2 asGIF() method
 
   ($gif,$boxes) = $object->asGIF();
@@ -1690,7 +1686,9 @@ sub timestamp {
       $self->_fill;
       $self->_parse;
     }
-    return $self->{'.timestamp'};
+    return $self->{'.timestamp'} if $self->{'.timestamp'};
+    return unless defined $self->right;
+    return $self->{'.timestamp'} = $self->right->timestamp;
 }
 
 sub comment {
@@ -1738,7 +1736,7 @@ sub delete {
   }
 
   push(@{$self->{'.update'}},join(' ','-D',
-				 map { Ace::AceDB->freeprotect($_) } ($self->_split_tags($tag),@values)));
+				 map { Ace->freeprotect($_) } ($self->_split_tags($tag),@values)));
   delete $self->{'.PATHS'}; # uncache cached values
   1;
 }
@@ -1751,23 +1749,20 @@ sub kill {
   return 1 unless $db->count($self->class,$self->name);
   my $result = $db->raw_query("kill");
   if (defined($result) and $result=~/write access/im) {  # this keeps changing
-    $Ace::ERR = "Write access denied";
+    $Ace::Error = "Write access denied";
     return;
   }
   # uncache cached values and clear the object out
   # as best we can
-  delete $self->{'.PATHS'}; 
-  delete $self->{'.right'};
-  delete $self->{'.raw'};
-  delete $self->{'.down'};
+  delete @{$self}{qw[.PATHS .right .raw .down]};
   1;
 }
 
-sub isTimestamp {
-  my $self = shift;
-  return 1 if $self->class eq 'UserSession';
-  return;
-}
+# sub isTimestamp {
+#   my $self = shift;
+#   return 1 if $self->class eq 'UserSession';
+#   return;
+# }
 
 sub isComment {
   my $self = shift;
@@ -1798,7 +1793,7 @@ sub add_row {
     } else {
       $_ = $self->new('scalar',$_);
     }
-    $previous->{'.right'} = $_ if $previous;
+    $previous->{'.right'} = $_ if defined $previous;
     $previous = $_;
     $_->{'.right'} = undef; # make sure it doesn't automatically expand!
   }
@@ -1820,7 +1815,7 @@ sub add_row {
     $p->{'.right'} = $values[0];
   }
 
-  push(@{$self->{'.update'}},join(' ',map { Ace::AceDB->freeprotect($_) } (@tags,@values)));
+  push(@{$self->{'.update'}},join(' ',map { Ace->freeprotect($_) } (@tags,@values)));
   delete $self->{'.PATHS'}; # uncache cached values
   1;
 }
@@ -1870,29 +1865,39 @@ sub replace {
 
 # commit changes from local copy to database copy
 sub commit {
-    my $self = shift;
-    return unless my $db = $self->db;
+  my $self = shift;
+  return unless my $db = $self->db;
+  
+  my ($retval,@cmd);
+  my $name = $self->{'name'};
+  return unless defined $name;
+  
+  $name =~ s/([^a-zA-Z0-9_-])/\\$1/g;
+  return 1 unless exists $self->{'.update'} && $self->{'.update'};
 
-    my ($retval,@cmd);
-    my $name = $self->{'name'};
-    return unless defined $name;
-
-    $name =~ s/([^a-zA-Z0-9_-])/\\$1/g;
-    return 1 unless exists $self->{'.update'} && $self->{'.update'};
-
+  
+  $Ace::Error = undef;
+  my $result = '';
+  
+  # bad design alert: the following breaks encapsulation
+  if ($db->{database}->can('write')) { # new way for socket server
+    my $cmd = join "\n","$self->{'class'} : $name",@{$self->{'.update'}};
+    warn $cmd if $self->debug;
+    $result = $db->raw_query($cmd,'parse');  # sets Ace::Error for us
+  } else {   # old way for RPC server and local
     my $cmd = join('; ',"$self->{'class'} : $name",
 		   @{$self->{'.update'}});
     warn $cmd if $self->debug;
-    my $result = $db->raw_query("parse = $cmd");
+    $result = $db->raw_query("parse = $cmd");
+  }
 
-    $Ace::ERR = '';
-    if (defined($result) and $result=~/write access/im) {  # this keeps changing
-	$Ace::ERR = "Write access denied";
-    } elsif ($result =~ /sorry|parse error/mi) {
-	$Ace::ERR = $result;
-    }
-    undef $self->{'.update'};
-    return !$Ace::ERR;
+  if (defined($result) and $result=~/write access/im) {  # this keeps changing
+    $Ace::Error = "Write access denied";
+  } elsif ($result =~ /sorry|parse error/mi) {
+    $Ace::Error = $result;
+  }
+  undef $self->{'.update'};
+  return !$Ace::Error;
 }
 
 sub rollback {
@@ -1916,64 +1921,59 @@ sub date_style {
   return $self->db->date_style(@_);
 }
 
+sub _asHTML {
+  my($self,$out,$position,$level,$morph_code) = @_;
+  do {
+    $$out .= "<TR ALIGN=LEFT VALIGN=TOP>" unless $position;
+    $$out .= "<TD></TD>" x ($level-$position-1);
+    my ($cell,$prune,$did_it_myself) = $morph_code->($self);
+    $$out .= $did_it_myself ? $cell : "<TD>$cell</TD>";
+    if ($self->comment) {
+      my ($cell,$p,$d) = $morph_code->($self->comment);
+      $$out .= $d ? $cell : "<TD>$cell</TD>";
+      $$out .= "</TR>\n" . "<TD></TD>" x $level unless $self->down && !defined($self->right);
+    }
+    $level = $self->right->_asHTML($out,$level,$level+1,$morph_code) if defined($self->right) && !$prune;
+    $$out .= "</TR>\n" if defined($self = $self->down);
+    $position = 0;
+  } while defined $self;
+  return --$level;
+}
+
+
 # This function is overly long because it is optimized to prevent parsing
 # parts of the tree that haven't previously been parsed.
 sub _asTable {
     my($self,$out,$position,$level) = @_;
-
-    if ($self->{'.raw'} and !$self->db->timestamps) {  # we still have raw data, so we can optimize
-      my ($a,$start,$end) = @{$self}{ qw(.col .start_row .end_row) };
-      my @to_append = map { join("\t",@{$_}[$a..$#{$_}]) } @{$self->{'.raw'}}[$start..$end];
-      my $new_row;
-      foreach (@to_append) {
-	# hack alert
-	s/(\?.*?[^\\]\?.*?[^\\]\?)/$self->_ace_format(Ace::AceDB->split($1))/eg;
-	if ($new_row++) {
-	  $$out .= "\n";
-	  $$out .= "\t" x ($level-1) 
+    do {
+      if ($self->{'.raw'}) {  # we still have raw data, so we can optimize
+	my ($a,$start,$end) = @{$self}{ qw(.col .start_row .end_row) };
+	my @to_append = map { join("\t",@{$_}[$a..$#{$_}]) } @{$self->{'.raw'}}[$start..$end];
+	my $new_row;
+	foreach (@to_append) {
+	  # hack alert
+	  s/(\?.*?[^\\]\?.*?[^\\]\?)\S*/$self->_ace_format(Ace->split($1))/eg;
+	  if ($new_row++) {
+	    $$out .= "\n";
+	    $$out .= "\t" x ($level-1) 
+	  }
+	  $$out .= $_;
 	}
-	$$out .= $_;
+	return $level-1;
       }
-      return $level-1;
-    }
 
-    $$out .= "\t" x ($level-$position-1);
-    $$out .= $self->name . "\t";
-    if ($self->comment) {
-      $$out .= $self->comment;
-      $$out .= "\n" . "\t" x $level unless $self->down && !$self->right;
-    }
-    $level = $self->right->_asTable($out,$level,$level+1)
-      if $self->right;
-    if ($self->down) {
-      $$out .= "\n";
-      $level = $self->down->_asTable($out,0,$level);
-    } else {
-      $level--;
-    }
-    return $level;
-}
-
-sub _asHTML {
-  my($self,$out,$position,$level,$morph_code) = @_;
-  $$out .= "<TR ALIGN=LEFT VALIGN=TOP>" unless $position;
-  
-  $$out .= "<TD></TD>" x ($level-$position-1);
-  my ($cell,$prune,$did_it_myself) = $morph_code->($self);
-  $$out .= $did_it_myself ? $cell : "<TD>$cell</TD>";
-  if ($self->comment) {
-    my ($cell,$p,$d) = $morph_code->($self->comment);
-    $$out .= $d ? $cell : "<TD>$cell</TD>";
-    $$out .= "</TR>\n" . "<TD></TD>" x $level unless $self->down && !defined($self->right);
-  }
-  $level = $self->right->_asHTML($out,$level,$level+1,$morph_code) if defined($self->right) && !$prune;
-  if (defined($self->down)) {
-    $$out .= "</TR>\n";
-    $level = $self->down->_asHTML($out,0,$level,$morph_code);
-  } else {
-    $level--;
-  }
-  return $level;
+      $$out .= "\t" x ($level-$position-1);
+      $$out .= $self->name . "\t";
+      if ($self->comment) {
+	$$out .= $self->comment;
+	$$out .= "\n" . "\t" x $level unless $self->down && !defined($self->right);
+      }
+      $level = $self->right->_asTable($out,$level,$level+1)
+	if defined $self->right;
+      $$out .= "\n" if defined($self = $self->down);
+      $position = 0;
+    } while defined $self;
+    return --$level;
 }
 
 # This is the default code that will be called during construction of
@@ -2028,7 +2028,7 @@ sub _asAce {
       $$out .= join("\t",@$tags) . "\t" if ($level==0) && (@$tags);
       my (@to_modify) = @{$_}[$a..$#{$_}];
       foreach (@to_modify) {
-	my ($class,$name) =Ace::AceDB->split($_);
+	my ($class,$name) =Ace->split($_);
 	if (defined($name)) {
 	  $name = $self->_ace_format($class,$name);
 	  if (_isObject($class) || $name=~/[^\w.-]/) {
@@ -2050,7 +2050,7 @@ sub _asAce {
   
   $$out .= join("\t",@$tags) . "\t" if ($level==0) && (@$tags);
   $$out .= $self->escape . "\t";
-  if ($self->right) {
+  if (defined $self->right) {
     push(@$tags,$self->escape);
     $self->right->_asAce($out,$level+1,$tags);
     pop(@$tags);
@@ -2073,3 +2073,87 @@ sub _to_ace_date {
   return "$yr-$MO{$mo}-$day";
 }
 
+### Return an XML syntax representation  ###
+### Consider this feature experimental   ###
+sub asXML {
+    my $self = shift;
+    return unless defined($self->right);
+
+    my ($do_content,$do_class,$do_value,$do_timestamps) = rearrange([qw(CONTENT CLASS VALUE TIMESTAMPS)],@_);
+    $do_content    = 0 unless defined $do_content;
+    $do_class      = 1 unless defined $do_class;
+    $do_value      = 1 unless defined $do_value;
+    $do_timestamps = 1 unless (defined $do_timestamps && !$do_timestamps) || !$self->db->timestamps;
+    my %options = (content    => $do_content,
+		   class      => $do_class,
+		   value      => $do_value,
+		   timestamps => $do_timestamps);
+    my $name = $self->escapeXML($self->name);
+    my $class = $self->class;
+    my $string = '';
+    $self->_asXML(\$string,0,0,'',0,\%options);
+    return $string;
+}
+
+sub _asXML {
+  my($self,$out,$position,$level,$current_tag,$tag_level,$opts) = @_;
+
+  do {
+    my $name = $self->escapeXML($self->name);
+    my $class = $self->class;
+    my ($tagname,$attributes,$content) = ('','',''); # prevent uninitialized variable warnings
+    my $tab = "    " x ($level-$position); # four spaces
+    $current_tag ||= $class;
+    $content = $name if $opts->{content};
+
+    if ($self->isTag) {
+      $current_tag = $tagname = $name;
+      $tag_level = 0;
+    } else {
+      $tagname = $tag_level > 0 ? sprintf "%s-%d",$current_tag,$tag_level + 1 : $current_tag;
+      $class = "#$class" unless $self->isObject;
+      $attributes .= qq( class="$class") if $opts->{class};
+      $attributes .= qq( value="$name")  if $opts->{value};
+    }
+
+    if (my $c = $self->comment) {
+      $c = $self->escapeXML($c);
+      $attributes .= qq( comment="$c");
+    }
+
+    if ($opts->{timestamps} && (my $timestamp = $self->timestamp)) {
+      $timestamp = $self->escapeXML($timestamp);
+      $attributes .= qq( timestamp="$timestamp");
+    }
+    
+    unless (defined $self->right) { # lone tag
+      $$out .= $self->isTag || !$opts->{content} ? qq($tab<$tagname$attributes />\n) 
+	                                         : qq($tab<$tagname$attributes>$content</$tagname>\n);
+    } elsif ($self->isTag) { # most tags are implicit in the XML tag names
+      if (!XML_COLLAPSE_TAGS or $self->right->isTag) {
+	$$out .= qq($tab<$tagname$attributes>\n);
+	$level = $self->right->_asXML($out,$position,$level+1,$current_tag,$tag_level + !XML_COLLAPSE_TAGS,$opts);
+	$$out .= qq($tab</$tagname>\n);
+      } else {
+	$level = $self->right->_asXML($out,$position+1,$level+1,$current_tag,$tag_level,$opts);
+      }
+    } else {
+      $$out .=  qq($tab<$tagname$attributes>$content\n);
+      $level = $self->right->_asXML($out,$position,$level+1,$current_tag,$tag_level+1,$opts);
+      $$out  .= qq($tab</$tagname>\n);
+    }
+
+    $self = $self->down;
+  } while defined $self;
+
+  return --$level;
+}
+
+sub escapeXML {
+  my ($self,$string) = @_;
+  $string =~ s/&/&amp;/g;
+  $string =~ s/\"/&quot;/g;
+  $string =~ s/</&lt;/g;
+  $string =~ s/>/&gt;/g;
+  return $string;
+}
