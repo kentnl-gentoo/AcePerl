@@ -113,7 +113,7 @@ use vars qw/@ISA @EXPORT @EXPORT_OK $VERSION %EXPORT_TAGS
 
 require Exporter;
 @ISA = qw(Exporter);
-$VERSION = 1.20;
+$VERSION = 1.21;
 
 ######################### This is the list of exported subroutines #######################
 @EXPORT = qw(
@@ -398,7 +398,7 @@ sub AceRedirect {
   my $args = ref($object) ? "name=$object&class=".$object->class
                           : "name=$object";
   my $destination = ResolveUrl($url => $args);
-  AceHeader(-Refresh => "2; URL=$destination");
+  AceHeader(-Refresh => "1; URL=$destination");
   print start_html (
 			 '-Title' => 'Redirect',
 			 '-Style' => Style(),
@@ -406,7 +406,7 @@ sub AceRedirect {
     h1('Redirect'),
     p("This request is being redirected to the \U$report\E display"),
     p("This page will automatically display the requested object in",
-	   "two seconds.",a({-href=>$destination},'Click on this link'),
+	   "one seconds",a({-href=>$destination},'Click on this link'),
 	'to load the page immediately.'),
     end_html();
     Apache->exit(0) if defined &Apache::exit;
@@ -673,7 +673,7 @@ sub OpenDatabase {
   return $db if $db && $db->ping;
 
   my ($host,$port,$user,$password) = getDatabasePorts($name);
-  my @auth = (-user=>$user,-pass=>$password) if $name && $password;
+  my @auth = (-user=>$user,-pass=>$password) if $user && $password;
   $DB{$name} = Ace->connect(-host=>$host,-port=>$port,-timeout=>50,@auth);
   return $DB{$name};
 }
@@ -864,7 +864,7 @@ sub Toggle {
 	$open{$section}++;
 	$img =  img({-src=>'/icons/triangle_right.gif',-alt=>'&gt;',
 			-height=>11,-width=>6,-border=>0}),
-	my $plural = (!$addplural or $label =~ /s$/) ? $label : "${label}s";
+	my $plural = ($addplural and $label !~ /s$/) ? "${label}s" : "$label";
 	$label = font({-class=>'toggle'},!$addcount ? $plural : "$count $plural");
     }
     param(-name=>'open',-value=>join(' ',keys %open));
