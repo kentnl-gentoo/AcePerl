@@ -30,7 +30,7 @@
  *-------------------------------------------------------------------
  */
 
-/* $Id: mystdlib.h,v 1.56 1998/12/04 16:04:58 fw Exp $ */
+/* $Id: mystdlib.h,v 1.3 2001/07/16 21:04:45 lstein Exp $ */
 
 #ifndef DEF_MYSTDLIB_H
 #define DEF_MYSTDLIB_H

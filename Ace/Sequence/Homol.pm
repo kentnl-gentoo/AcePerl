@@ -4,10 +4,11 @@ package Ace::Sequence::Homol;
 use vars '@ISA';
 @ISA = 'Ace::Object';
 
-*stop = \&end;
 
 # this was a mistake!
 # use overload '""' => 'asString';
+
+# *stop = \&end;
 
 sub new {
   my ($pack,$tclass,$tname,$db,$start,$end) = @_;
@@ -19,6 +20,8 @@ sub new {
 sub start  {  return $_[0]->{'start'};  }
 
 sub end    {  return $_[0]->{'end'};    }
+
+sub stop   {  return $_[0]->{'end'};    }
 
 # sub _clone {
 #     my $self = shift;

@@ -2,7 +2,7 @@ package Ace::Object;
 use strict;
 use Carp;
 
-# $Id: Object.pm,v 1.36 2001/05/31 18:15:23 lstein Exp $
+# $Id: Object.pm,v 1.41 2001/07/20 15:35:55 lstein Exp $
 
 use overload 
     '""'       => 'name',
@@ -22,7 +22,7 @@ use constant XML_SUPPRESS_TIMESTAMPS=>0;
 require AutoLoader;
 
 $DEFAULT_WIDTH=25;  # column width for pretty-printing
-$VERSION = '1.62';
+$VERSION = '1.65';
 
 # Pseudonyms and deprecated methods.
 *isClass        =  \&isObject;
@@ -115,7 +115,8 @@ sub newFromText {
 sub name {
     my $self = shift;
     $self->{'name'} = shift if  defined($_[0]);
-    return $self->_ace_format($self->{'class'},$self->{'name'});
+    my $name = $self->_ace_format($self->{'class'},$self->{'name'});
+    $name;
 }
 
 ################### class of the object #################
@@ -124,6 +125,12 @@ sub class {
     defined($_[0])
 	? $self->{'class'} = shift
 	: $self->{'class'};
+}
+
+################### name and class together #################
+sub id {
+  my $self = shift;
+  return "$self->{class}:$self->{name}";
 }
 
 ############## return true if two objects are equivalent ##################
@@ -457,7 +464,13 @@ sub factory {
 ############### mostly private functions from here down #############
 #####################################################################
 #####################################################################
+# simple clone
+sub clone {
+  my $self = shift;
+  return bless {%$self},ref $self;
+}
 
+# selective clone
 sub _clone {
     my $self = shift;
     my $pack = ref($self);
@@ -1261,9 +1274,11 @@ is primarily for demonstration.
 
   ($gif,$boxes) = $object->asGIF();
   ($gif,$boxes) = $object->asGIF(-clicks=>[[$x1,$y1],[$x2,$y2]...]
-	                         -dimensions=>[$width,$height],
-				 -display => $display_type,
-				 -view    => $view_type
+	                         -dimensions=> [$width,$height],
+				 -coords    => [$top,$bottom],
+				 -display   => $display_type,
+				 -view      => $view_type,
+				 -getcoords => $true_or_false
 	                         );
 
 asGIF() returns the object as a GIF image.  The contents of the GIF
@@ -1289,6 +1304,14 @@ default display is used.
 The optional B<-view> argument allows you to specify an alternative
 view for MAP objects only.  If not specified, you'll get the default
 view.
+
+The option B<-coords> argument allows you to provide the top and
+bottom of the display for MAP objects only.  These coordinates are in
+the map's native coordinate system (cM, bp).  By default, AceDB will
+show most (but not necessarily all) of the map according to xace's
+display rules.  If you call this method with the B<-getcoords>
+argument and a true value, it will return a two-element array
+containing the coordinates of the top and bottom of the map.
 
 asGIF() returns a two-element array.  The first element is the GIF
 data.  The second element is an array reference that indicates special 
@@ -1697,20 +1720,36 @@ sub asString {
 #                                   -dimensions=>[$x,$y]);
 sub asGif {
   my $self = shift;
-  my ($clicks,$dimensions,$display,$view) = rearrange(['CLICKS',
-						       ['DIMENSIONS','DIM'],
-						       'DISPLAY',
-						       'VIEW'],@_);
+  my ($clicks,$dimensions,$display,$view,$coords,$getcoords) = rearrange(['CLICKS',
+									  ['DIMENSIONS','DIM'],
+									  'DISPLAY',
+									  'VIEW',
+									  'COORDS',
+									  'GETCOORDS',
+									  ],@_);
   $display = "-D $display" if $display;
   $view    = "-view $view" if $view;
+  my $c;
+  if ($coords) {
+    $c    =  ref($coords) ? "-coords @$coords" : "-coords $coords";
+  }
   my @commands;
-  if ($view) {
-      @commands = "gif map \"@{[$self->name]}\" $view";
+  if ($view || $c || $self->class =~ /Map/i) {
+      @commands = "gif map \"@{[$self->name]}\" $view $c";
   } else {
       @commands = "gif display $display $view @{[$self->class]} \"@{[$self->name]}\"";
   }
   push(@commands,"Dimensions @$dimensions") if ref($dimensions);
   push(@commands,map { "mouseclick @{$_}" } @$clicks) if ref($clicks);
+
+  if ($getcoords) { # just want the coordinates
+    my ($start,$stop);
+    my $data = $self->{'db'}->raw_query(join(' ; ',@commands));    
+    return unless $data =~ /\"[^\"]+\" ([\d.-]+) ([\d.-]+)/;
+    ($start,$stop) = ($1,$2);
+    return ($start,$stop);
+  }
+
   push(@commands,"gifdump -");
   
   # do the query

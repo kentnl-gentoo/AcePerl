@@ -6,7 +6,7 @@
  *	-	Cleaning up WIN32 file system port in filsubs.c et al.
  * *  Jun  4 22:07 1996 (rd) */
 
-/* $Id: mydirent.h,v 1.13 1997/11/09 23:03:27 rd Exp $ */
+/* $Id: mydirent.h,v 1.2 2001/07/16 21:04:45 lstein Exp $ */
 
 /*
  * Filesystem-independent directory information.
