@@ -10,7 +10,7 @@ use AutoLoader 'AUTOLOAD';
 use vars '$VERSION';
 my %CACHE;
 
-$VERSION = '1.50';
+$VERSION = '1.51';
 
 use constant CACHE => 1;
 
@@ -464,9 +464,14 @@ sub _make_clones {
 sub alignments {
   my $self    = shift;
   my @subtypes = @_;
-  my @types = map { "similarity:$_" } @subtypes;
+  my @types = map { "similarity:\^$_\$" } @subtypes;
   push @types,'similarity' unless @types;
   return $self->features(@types);
+}
+
+sub segments {
+  my $self = shift;
+  return $self;
 }
 
 sub _make_alignments {
@@ -479,7 +484,8 @@ sub _make_alignments {
   for my $feature (@$features) {
     next unless $feature->type eq 'similarity';
     my $target = $feature->info;
-    push @{$homol{$target}},$feature;
+    my $subtype = $feature->subtype;
+    push @{$homol{$target,$subtype}},$feature;
   }
 
   # map onto Ace::Sequence::GappedAlignment objects

@@ -178,8 +178,11 @@ sub AceRedirect {
   my ($report,$object) = @_;
 
   my $url = Configuration->display($report,'url');
-  my $destination = ResolveUrl($url => "name=$object");
-  AceHeader(-Refresh => "1; URL=$destination");
+
+  my $args = ref($object) ? "name=$object&class=".$object->class
+                          : "name=$object";
+  my $destination = ResolveUrl($url => $args);
+  AceHeader(-Refresh => "2; URL=$destination");
   print start_html (
 			 '-Title' => 'Redirect',
 			 '-Style' => Style(),
@@ -283,6 +286,7 @@ sub Object2URL {
     }
     my $display = url(-relative=>1);
     my ($disp,$parameters) = Configuration->map_url($display,$name,$class);
+    return $disp unless $parameters;
     return Url($disp,$parameters);
 }
 
@@ -296,6 +300,7 @@ sub Url {
 sub ObjectLink {
   my $object     = shift;
   my $link_text  = shift;
+  my $url = Object2URL($object,@_) or return $link_text || "$object";
   return a({-href=>Object2URL($object,@_),-name=>"$object"},$link_text || "$object");
 }
 
@@ -444,7 +449,7 @@ sub DoRedirect {
 
 # Toggle a subsection open and close
 sub Toggle {
-    my ($section,$label,$count,$noplural,$nocount) = @_;
+    my ($section,$label,$count,$addplural,$addcount) = @_;
     my %open = %OPEN;
 
     $label ||= $section;
@@ -457,13 +462,13 @@ sub Toggle {
 	$open{$section}++;
 	$img =  img({-src=>'/icons/triangle_right.gif',-alt=>'&gt;',
 			-height=>11,-width=>6,-border=>0}),
-	my $plural = ($noplural or $label =~ /s$/) ? $label : "${label}s";
-	$label = font({-class=>'toggle'},$nocount ? $plural : "$count $plural");
+	my $plural = (!$addplural or $label =~ /s$/) ? $label : "${label}s";
+	$label = font({-class=>'toggle'},!$addcount ? $plural : "$count $plural");
     }
     param(-name=>'open',-value=>join(' ',keys %open));
     my $url = url(-absolute=>1,-path_info=>1,-query=>1);
 
-    my $href = a({-href=>"$url#$section",-name=>$section},$img.$label);
+    my $href = a({-href=>"$url#$section",-name=>$section},$img.'&nbsp;'.$label);
     if (wantarray ){
       return ($href,$OPEN{$section})
     } else {
