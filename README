@@ -1,4 +1,4 @@
-This is version 1.54 of AcePerl, a Perl interface for the ACEDB
+This is version 1.62 of AcePerl, a Perl interface for the ACEDB
 object-oriented database.  Designed specifically for use in genome
 sequencing projects, ACEDB provides powerful modeling and management
 services for biological and laboratory data.  For others, it is a good
@@ -13,14 +13,27 @@ INSTALLATION:
 AcePerl comes with all the code needed to communicate with a remote
 ACEDB server.  No additional software is required.  However, if you
 wish to communicate with your own ACEDB database, you must use ACEDB
-version 4.7c or higher, available from one of these two locations:
+version 4.7c or higher, available from this location:
 
 	ftp://ncbi.nlm.nih.gov/repository/acedb/
 	
-There are numerous performance enhancements and bug fixes in version
-4.7 of ACEDB.  Use of older versions of ACEDB is not recommended.
-However this advice only applies to the aceserver, gifaceserver and
-tace applications.  You may use older versions of the graphical xace
+However, to take full advantage of the sequence annotation features in
+the Ace::Sequence and Ace::Sequence::Feature classes, you will need
+version 4.7l (that's an "ell") or higher.  (The features in 4.7l have
+not yet been folded into version 4.8, although this will be changing
+soon.)  Version 4.7l can be obtained here:
+
+  http://stein.cshl.org/AcePerl/archive/ace_4_7l.tar.gz
+
+better yet, download
+
+  http://stein.cshl.org/AcePerl/archive/acedb-latest.tar.gz
+
+to obtain the version of the aceserver that I am currently using to
+develop and test AcePerl.
+
+This advice only applies to the aceserver, gifaceserver and tace
+applications.  You may use older versions of the graphical xace
 application freely, as this does not interact with AcePerl.
 
 If you wish to use AcePerl in a client-server fashion, you must get
@@ -60,9 +73,11 @@ Follow these steps to unpack, build and install AcePerl:
    You can find a list of machine definitions in
    AcePerl-X.XX/ace/wmake.  There are lots of them, but only
    one or two per operating system, so it's usually pretty
-   easy to choose the right one.  The defintions have names 
+   easy to choose the right one.  The definitions have names 
    like ALPHA_4_GCC_DEF.  Before setting the corresponding
    environment variable, remove the "_DEF" from the end of the name.
+   In case you're wondering the "4" stands for version 4 of the ACEDB
+   server.
 
    Please drop me a line to let me know what you had to do to get
    the ACEDB libraries to compile.  I'll fix up the Makefile so
@@ -138,45 +153,9 @@ Or you could reinstall AcePerl in the main Perl library tree just by
 entering the wperl/ subdirectory, and rerunning "perl Makefile.PL"
 without defining INSTALLSITELIB.
 
-HINTS ON INSTALLING AN ACE SERVER
-
-ACEDB comes with two servers called "aceserver" and "gifaceserver".
-The difference between the two is that gifaceserver has the ability to 
-serve graphical pictures.  Aceserver is text-only. In general, you
-will want to use gifaceserver unless you know you will never need to
-serve pictures.
-
-A full description of installing (gif)aceserver is given in the ACEDB
-distribution subdirectory wrpc/, in the file SERVER.INSTALLATION.
-In order to get the server to start up automatically when it's needed, 
-you must modify two system files, /etc/rpc, and /etc/inetd.conf.
-
-Here's my configuration:
-
-* /etc/rpc: 
-... lots of existing entries...
-elegans		200005
-
-* /etc/inetd.conf:
-... lots of existing entries...
-elegans/1  stream  rpc/tcp wait acedb  /usr/local/bin/gifaceserver 
-        aceserver /local/db/elegans 200005 1200:1200:0
-
-The line has been wrapped to fit on the page.  All inetd.conf entries
-should be on a single line.  Replace /usr/local/bin/gifaceserver with
-the location of your aceserver binary, and /local/db/elegans with the
-location of your ACE database.
-
-You may need to kill the inetd daemon completely and restart it in
-order to have the server come up correctly the first time.  At least I
-did.  After that it will come up whenever it is needed and exit after
-it has idled for the timeout period specified on the command line.
-
-(gif)aceserver has a problem on many Solaris systems.  The symptom of
-this problem is that the server launches, but fails to respond to
-requests.  The solution to this problem is to install the binary
-distribution of ACEDB for solaris, or to follow the directions given
-in the SERVER.INSTALLATION file.
+See ACEDB.HOWTO in the docs/ subdirectory for instructions on
+obtaining and setting up the ACeDB database.  You'll find other hints
+here too.
 
 USING ACEPERL
 
@@ -192,6 +171,11 @@ interface to any local or remote ace database.  If you have the Perl
 Term::readline module installed, it gives you command-line editing,
 completion, and history.
 
+The script "dump_cdna.pl" shows you how to dump out all spliced cDNAs
+from wormbase.org.  Other dump scripts show similar tricks.  You can
+use these as templates for doing other biologically interesting
+tricks.
+
 There is also family of CGI scripts that run on top of AcePerl to give
 a WebAce-like interface to Ace (it is not as feature-full as WebAce,
 but it is probably easier to set up and run).  You can find the
@@ -202,5 +186,6 @@ package at this URL:
 Lincoln Stein
 lstein@cshl.org
 
-January 21, 1999
+April 26, 2000
+
 

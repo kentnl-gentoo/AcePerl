@@ -1,32 +1,35 @@
-# @(#)SOLARIS_4_NEW_DEF	1.1  4/11/95 
-
 #################################################################
+#                                                               #
+#  $Id: SUNOS_DEF,v 1.1 1999/02/26 14:46:35 lstein Exp $
+#                                                               #
 ############### acedb: R.Durbin and J.Thierry-Mieg ##############
-############### wmake/SOLARIS_4_OPT  April-15-1995 ##############
 #################################################################
 
 #################################################################
 ########## Machine dependant compiler modification ##############
-########### for the Solaris OS                 ##################
+########### for SUN stations with SunOS 4.1.x ###################
 #################################################################
 ########### This file is included by wmake/truemake #############
 ######  Edit this file to adapt the ACeDB to a new machine ######
 #####   following the explanations given in wmake/truemake  #####
 #################################################################
 
-NAME = SOLARIS
-COMPILER = cc -O2 -I/usr/openwin/include -DNO_LEFT_CASTING -DACEDB4
-LINKER = cc -L/usr/openwin/lib -R/usr/openwin/lib
+NAME = SUN
+#COMPILER = gcc -g -O2 -Wreturn-type -Wimplicit -Wunused -Wcomment \
+#	-fwritable-strings -DACEDB4 -I/usr/openwin/include
+##COMPILER = gcc -g -O2 -Wreturn-type -Wimplicit -Wunused -Wcomment \
+##	-fwritable-strings -DACEDB4 -I/usr/openwin.old/include
 
-# -DWCS causes a problem, class versus Xlib.h
-LIBS = -lm  -lnsl -lsocket -lmalloc
-RANLIB_NEEDED = false
-AR_OPTIONS = ru
-RPCGEN_FLAGS = -b -I -K -1
 
-# -DWCS causes a problem, class versus Xlib.h
-# nsl is the rpc library 
+## NOMEMMOVE will define memmove on SunOS (for staden package)
+COMPILER = gcc -g -O2 -Wall -fwritable-strings -DNOMEMMOVE -DACEDB4
+
+LINKER = gcc -g -static 
+
+#LIBS = -lm -L/usr/lib -L/usr/openwin.old/lib -L/usr/X11R6.3/lib
+LIBS = -lm -L/usr/lib
 
 
 #################################################################
 #################################################################
+ 

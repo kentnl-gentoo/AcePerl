@@ -3,8 +3,8 @@
 # Tests of object-level fetches and following
 ######################### We start with some black magic to print on failure.
 use lib '../blib/lib','../blib/arch';
-use constant HOST => $ENV{ACEDB_HOST} || 'beta.crbm.cnrs-mop.fr';
-use constant PORT => $ENV{ACEDB_PORT} || 20000100;
+use constant HOST => $ENV{ACEDB_HOST} || 'stein.cshl.org';
+use constant PORT => $ENV{ACEDB_PORT} || 200005;
 
 BEGIN {$| = 1; print "1..36\n"; }
 END {print "not ok 1\n" unless $loaded;}
@@ -32,7 +32,8 @@ my $DATA = q{Address  Mail    The Sanger Centre
                  1223-494958
          Fax     1223-494919
 };
-test(2,$db = Ace->connect(-host=>HOST,-port=>PORT),"connection failure");
+test(2,$db = Ace->connect(-host=>HOST,-port=>PORT,-timeout=>50),
+     "connection failure");
 die "Couldn't establish connection to database.  Aborting tests.\n" unless $db;
 test(3,$obj = $db->fetch('Author','Sulston JE'),"fetch failure");
 print STDERR "\n  ...Failed to get test object. Wrong database?\n     Expect more failures... " 
@@ -40,19 +41,19 @@ print STDERR "\n  ...Failed to get test object. Wrong database?\n     Expect mor
 test(4,defined($obj) && $obj eq 'Sulston JE',"string overload failure");
 test(5,@obj = $db->fetch('Author','Sulston*'),"wildcard failure");
 test(6,@obj==2,"failed to recover two authors from Sulston*");
-test(7,defined($obj) && $obj->right eq 'Full_name',"auto fill failure");
-test(8,defined($obj) && $obj->Full_name->at eq 'John Sulston',"automatic method generation failure");
-test(9,defined($obj) && $obj->Full_name->pick eq 'John Sulston',"pick failure");
+test(7,defined($obj) && $obj->right eq 'Also_known_as',"auto fill failure");
+test(8,defined($obj) && $obj->Also_known_as eq 'John Sulston',"automatic method generation failure");
+test(9,defined($obj) && $obj->Also_known_as->pick eq 'John Sulston',"pick failure");
 test(10,defined($obj) && (@obj = $obj->Address(2)) == 9,"col failure");
 test(11,defined($obj) && ($lab = $obj->Laboratory),"fetch failure");
 test(12,defined($lab) && join(' ',sort($lab->tags)) eq 'Address CGC Staff',"tags failure");
 test(13,defined($lab) && $lab->at('CGC.Allele_designation')->at eq 'e',"compound path failure");
-test(14,defined($obj) && $obj->Address->asString eq $DATA,"asString() method");
+test(14,defined($obj) && $obj->Address(0)->asString eq $DATA,"asString() method");
 test(15,$db->ping,"can't ping");
 test(16,$db->classes,"can't count classes");
 test(17,defined($obj) && join(' ',sort $obj->fetch('Laboratory')->tags) eq "Address CGC Staff","fetch failure");
-test(18,defined($obj) && join(' ',$obj->Address->row) eq "Address Mail The Sanger Centre","row() failure");
-test(19,defined($obj) && join(' ',$obj->Address->row(1)) eq "Mail The Sanger Centre","row() failure");
+test(18,defined($obj) && join(' ',$obj->Address(0)->row) eq "Address Mail The Sanger Centre","row() failure");
+test(19,defined($obj) && join(' ',$obj->Address(0)->row(1)) eq "Mail The Sanger Centre","row() failure");
 test(20,defined($obj) && (@h=$obj->Address(2)),"tag[2] failure");
 test(21,defined($obj) && (@h==9),"tag[2] failure");
 test(22,$iterator1 = $db->fetch_many('Author','S*'),"fetch_many() failure (1)");

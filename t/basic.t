@@ -3,8 +3,8 @@
 # Low level tests of connectivity
 ######################### We start with some black magic to print on failure.
 use lib '../blib/lib','../blib/arch';
-use constant HOST => $ENV{ACEDB_HOST} || 'beta.crbm.cnrs-mop.fr';
-use constant PORT => $ENV{ACEDB_PORT} || 20000100;
+use constant HOST => $ENV{ACEDB_HOST} || 'stein.cshl.org';
+use constant PORT => $ENV{ACEDB_PORT} || 200005;
 
 BEGIN {$| = 1; print "1..11\n"; }
 END {print "not ok 1\n" unless $loaded;}
@@ -21,7 +21,7 @@ sub test {
 }
 
 # Test code:
-my $ptr = Ace::AceDB->new(HOST,PORT,25);
+my $ptr = Ace::AceDB->new(HOST,PORT,50);
 test(2,$ptr,"connection failed");
 die "Couldn't establish connection to database.  Aborting tests.\n" unless $ptr;
 test(3,$ptr->status() == STATUS_WAITING,"did not get wait status");

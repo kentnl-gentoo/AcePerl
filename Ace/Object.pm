@@ -1,5 +1,9 @@
 package Ace::Object;
+use strict;
 use Carp;
+
+# $Id: Object.pm,v 1.18 2000/04/26 17:51:39 lstein Exp $
+
 use overload 
     '""'       => 'name',
     '=='       => 'eq',
@@ -11,7 +15,7 @@ use Ace 1.50 qw(:DEFAULT rearrange);
 require AutoLoader;
 
 $DEFAULT_WIDTH=25;  # column width for pretty-printing
-$VERSION = '1.51';
+$VERSION = '1.62';
 
 # Pseudonyms and deprecated methods.
 *isClass        =  \&isObject;
@@ -23,45 +27,55 @@ sub AUTOLOAD {
     my($pack,$func_name) = $AUTOLOAD=~/(.+)::([^:]+)$/;
     my $self = $_[0];
 
-    # The following commented area works without the autoloader
-    #     my $error = "Can't locate object method \"$func_name\" via package \"$pack\"";
-    #     croak $error unless $self->db && $self->isObject;
-    #     $self = $self->fetch unless $self->isRoot;  # dereference, if need be
-    #     croak $error unless $self;
-    #     croak $error unless $self->model->valid_tag($func_name);
+    # This section works with Autoloader
+    my $presumed_tag = $func_name =~ /^[A-Z]/ && $self->isObject;  # initial_cap 
 
-     # This section works with Autoloader
-    my $presumed_tag = $func_name =~ /^[A-Z]/;  # initial_cap 
-    $AutoLoader::AUTOLOAD = $AUTOLOAD;
-    goto &AutoLoader::AUTOLOAD unless $self->isObject;
-    $self = $self->fetch unless $self->isRoot;  # dereference, if need be
-    unless ($self) {
-      croak "Null object tag \"$func_name\"" if $presumed_tag;
+    if ($presumed_tag) {
+      croak "Invalid object tag \"$func_name\"" 
+	if $self->db && !$self->model->valid_tag($func_name);
+
+      $self = $self->fetch if !$self->isRoot && $self->db;  # dereference, if need be
+      croak "Null object tag \"$func_name\"" unless $self;
+
+      shift();  # get rid of the object
+      my $no_dereference;
+      if (defined($_[0]) && $_[0] eq '@') {
+	$no_dereference++;
+	shift();
+      }
+      return $self->search($func_name,@_) if wantarray;
+      my $obj = @_ ? $self->search($func_name,@_) : $self->search($func_name,1);
+      
+      # these nasty heuristics simulate aql semantics.
+      # undefined return
+      return unless $obj;
+
+      # don't dereference object if '@' symbol specified
+      return $obj if $no_dereference;
+
+      # don't dereference if an offset was explicitly specified
+      return $obj if defined($_[0]) && $_[0] =~ /\d+/;
+
+      # otherwise dereference if the current thing is an object or we are at a tag
+      # and the thing to the right is an object.
+#      return $obj->fetch if $obj->isObject || ($obj->right && $obj->right->isObject);  # this heuristic stinks
+      return $obj->fetch if $obj->isObject;  # always dereference objects
+
+      # otherwise return the thing itself
+      return $obj;
+    } else {
+      $AutoLoader::AUTOLOAD = __PACKAGE__ . "::$func_name";
       goto &AutoLoader::AUTOLOAD;
     }
-    unless ($self->model->valid_tag($func_name)) {
-      croak "Invalid object tag \"$func_name\"" if $presumed_tag;
-      goto &AutoLoader::AUTOLOAD;       
-    }
-
-    shift();  # get rid of the object
-    my $no_dereference;
-    if (defined($_[0]) && $_[0] eq '@') {
-      $no_dereference++;
-      shift();
-    }
-    return $self->search($func_name,@_) if wantarray;
-    my $obj = $self->search($func_name,@_);
-
-    return unless $obj;
-    return $obj if $no_dereference;
-    return $obj->fetch if $obj->isObject || ($obj->right && $obj->right->isObject);
-    return $obj;
 }
 
 sub DESTROY { }
 
 ###################### object constructor #################
+# IMPORTANT: The _clone subroutine will copy all instance variables that
+# do NOT begin with a dot (.).  If you do not want an instance variable
+# shared with cloned copies, proceed them with a dot!!!
+#
 sub new {
   my $pack = shift;
   my($class,$name,$db,$isRoot) = rearrange([qw/CLASS NAME/,[qw/DATABASE DB/],'ROOT'],@_);
@@ -70,7 +84,7 @@ sub new {
 		     'class' =>  $class
 		   },$pack;
   $self->{'db'} = $db if $self->isObject;
-  $self->{'root'}++ if defined $isRoot && $isRoot;
+  $self->{'.root'}++ if defined $isRoot && $isRoot;
   return $self
 }
 
@@ -91,7 +105,7 @@ sub newFromText {
 ################### name of the object #################
 sub name {
     my $self = shift;
-    $self->{name} = shift if  defined($_[0]);
+    $self->{'name'} = shift if  defined($_[0]);
     return $self->_ace_format($self->{'class'},$self->{'name'});
 }
 
@@ -99,8 +113,8 @@ sub name {
 sub class {
     my $self = shift;
     defined($_[0])
-	? $self->{class} = shift
-	: $self->{class};
+	? $self->{'class'} = shift
+	: $self->{'class'};
 }
 
 ############## return true if two objects are equivalent ##################
@@ -125,15 +139,15 @@ sub ne {
 
 ############ returns true if this is a top-level object #######
 sub isRoot {
-  return exists shift()->{'root'};
+  return exists shift()->{'.root'};
 }
 
 ################### handle to ace database #################
 sub db {
     my $self = shift;
     defined($_[0])
-	? $self->{db} = shift
-	: $self->{db};
+	? $self->{'db'} = shift
+	: $self->{'db'};
 }
 
 ### Return a portion of the tree at the indicated tag path     ###
@@ -143,13 +157,15 @@ sub db {
 #### the parent object if you pass a true value as the second argument
 sub at {
     my $self = shift;
-    my($tag,$return_parent,$pos) = rearrange(['TAG','PARENT','POS'],@_);
+    my($tag,$pos,$return_parent) = rearrange(['TAG','POS','PARENT'],@_);
     return $self->right unless $tag;
     $tag = lc $tag;
 
-    if (!defined($pos) and $tag=~/\[(\d+)\]$/) {
-      $pos = $1;
-      $tag=$`;
+    # Removed a $` here to increase speed -- tim.cutts@incyte.com 2 Sep 1999
+
+    if (!defined($pos) and $tag=~/(.*?)\[(\d+)\]$/) {
+      $pos = $2;
+      $tag = $1;
     }
 
     my $o = $self;
@@ -231,7 +247,7 @@ sub search {
 	      $obj = $subobject->right;
 	    } else { # old version of aceserver
 	      $obj = $self->new('tag',$tag,$self->{'db'});
-	      $obj->{'right'} = $subobject->right;
+	      $obj->{'.right'} = $subobject->right;
 	    }
 	    $self->{'.PATHS'}->{$lctag} = $obj;
 	  } else {
@@ -289,7 +305,7 @@ sub search {
 #### return true if tree is populated, without populating it #####
 sub filled {
   my $self = shift;
-  return exists($self->{'right'}) || exists($self->{'raw'});
+  return exists($self->{'.right'}) || exists($self->{'.raw'});
 }
 
 #### return true if you can follow the object in the database (i.e. a class ###
@@ -313,7 +329,7 @@ sub right {
 
   $self->_fill;
   $self->_parse;
-  return $self->{'right'} unless defined $pos;
+  return $self->{'.right'} unless defined $pos;
   croak "Position must be positive" unless $pos >= 0;
 
   my $node = $self;
@@ -327,7 +343,7 @@ sub right {
 sub down {
   my ($self,$pos) = @_;
   $self->_parse;
-  return $self->{'down'} unless defined $pos;
+  return $self->{'.down'} unless defined $pos;
   my $node = $self;
   while ($pos--) {
     defined($node = $node->down) || return;
@@ -387,15 +403,28 @@ sub model {
   return $self->db->model($self->class);
 }
 
+### Return the class in which to bless all objects retrieved from
+# database. Might want to override in other classes
+sub factory {
+  return __PACKAGE__;
+}
+
 #####################################################################
 #####################################################################
 ############### mostly private functions from here down #############
 #####################################################################
 #####################################################################
+
 sub _clone {
     my $self = shift;
     my $pack = ref($self);
-    return $pack->new($self->class,$self->name,$self->db,1);
+    my @public_keys = grep {substr($_,0,1) ne '.'} keys %$self;
+    my %newobj;
+    @newobj{@public_keys} = @{$self}{@public_keys};
+
+    # Turn into a toplevel object
+    $newobj{'.root'}++;
+    return bless \%newobj,$pack;
 }
 
 sub _fill {
@@ -410,19 +439,19 @@ sub _fill {
 
 sub _parse {
   my $self = shift;
-  return unless my $raw = $self->{'raw'};
+  return unless my $raw = $self->{'.raw'};
   my $ts = $self->db->timestamps;
-  my $col = $self->{'col'};
+  my $col = $self->{'.col'};
   my $current_obj = $self;
-  my $current_row = $self->{'start_row'};
+  my $current_row = $self->{'.start_row'};
   my $db = $self->{'db'};
 
-  my $time = $self->{'timestamp'} if $ts;
+  my $time = $self->{'.timestamp'} if $ts;
 
-  for (my $r=$current_row+1; $r<=$self->{'end_row'}; $r++) {
+  for (my $r=$current_row+1; $r<=$self->{'.end_row'}; $r++) {
     next unless $raw->[$r][$col];
 
-    $time = $current_obj->{'timestamp'} if $ts;
+    $time = $current_obj->{'.timestamp'} if $ts;
 
     my $obj_right = $self->_fromRaw($raw,$current_row,$col+1,$r-1,$db);
 
@@ -436,9 +465,9 @@ sub _parse {
 	last unless $obj_right = $self->_fromRaw($raw,$row++,$col+1,$r-1,$db);
 	$obj_right->timestamp($t)   if $t->isTimestamp;
       } 
-      $obj_right->timestamp($time) if $ts && defined($obj_right) && !$obj_right->{'timestamp'};
+      $obj_right->timestamp($time) if $ts && defined($obj_right) && !$obj_right->{'.timestamp'};
     }
-    $current_obj->{'right'} = $obj_right;
+    $current_obj->{'.right'} = $obj_right;
 
     my $obj_down = $self->new(Ace::AceDB->split($raw->[$r][$col]),$db);
 
@@ -448,11 +477,11 @@ sub _parse {
 	if $obj_down->isTimestamp;
       $obj_down->timestamp($time) if defined $time;
     }
-    $current_obj = $current_obj->{'down'} = $obj_down;
+    $current_obj = $current_obj->{'.down'} = $obj_down;
     $current_row = $r;
   }
 
-  my $obj_right = $self->_fromRaw($raw,$current_row,$col+1,$self->{'end_row'},$db);
+  my $obj_right = $self->_fromRaw($raw,$current_row,$col+1,$self->{'.end_row'},$db);
   # timestamp and comment handling
   if (defined($obj_right)) {
     my ($t,$i);
@@ -460,30 +489,33 @@ sub _parse {
     while ($obj_right->isTimestamp || $obj_right->isComment) {
       $current_obj->comment($obj_right)   if $obj_right->isComment;
       $t = $obj_right;
-      last unless defined($obj_right = $self->_fromRaw($raw,$row++,$col+1,$self->{'end_row'},$db));
+      last unless defined($obj_right = $self->_fromRaw($raw,$row++,$col+1,$self->{'.end_row'},$db));
       $obj_right->timestamp($t)   if $t->isTimestamp;
     }
-    $obj_right->timestamp($time) if $ts && defined($obj_right) && !$obj_right->{'timestamp'};
+    $obj_right->timestamp($time) if $ts && defined($obj_right) && !$obj_right->{'.timestamp'};
   }
-  $current_obj->{'right'} = $obj_right;
+  $current_obj->{'.right'} = $obj_right;
 
   # unstamped nodes take the timestamp on their right
-  $self->timestamp($self->{'right'}->{'timestamp'})
-    if $ts && !$self->{'timestamp'} && defined($self->{'right'}) && $self->{'right'}->{'timestamp'};
+  $self->timestamp($self->{'.right'}->{'.timestamp'})
+    if $ts 
+      && !$self->{'.timestamp'} && defined($self->{'.right'}) 
+	&& $self->{'.right'}->{'.timestamp'};
 
-  foreach (qw/raw start_row end_row col/) {
+  foreach ( qw(.raw .start_row .end_row .col) ) {
     delete $self->{$_};
   }
 }
 
 sub _fromRaw {
   my $pack = shift;
-  $pack = ref($pack) if ref($pack);
+  $pack = $pack->factory();
+
   my ($raw,$start_row,$col,$end_row,$db) = @_;
   return unless $raw->[$start_row][$col];
   my ($class,$name) = Ace::AceDB->split($raw->[$start_row][$col]);
   my $self = $pack->new($class,$name,$db,!($start_row || $col));
-  @{$self}{qw/raw start_row end_row col db/} = ($raw,$start_row,$end_row,$col,$db);
+  @{$self}{qw(.raw .start_row .end_row .col db)} = ($raw,$start_row,$end_row,$col,$db);
   return $self;
 }
 
@@ -492,9 +524,12 @@ sub _fromRaw {
 sub _at {
     my ($self,$tag) = @_;
     my $pos=0;
-    if ($tag=~/\[(\d+)\]$/) {
-      $pos=$1;
-      $tag=$`;
+
+    # Removed a $` here to increase speed -- tim.cutts@incyte.com 2 Sep 1999
+
+    if ($tag=~/(.*?)\[(\d+)\]$/) {
+      $pos=$2;
+      $tag=$1;
     }
     my $p;
     my $o = $self->right;
@@ -785,7 +820,7 @@ The second line above is equivalent to:
 
 Called without a tag name, at() just dereferences the object,
 returning whatever is to the right of it, the same as
-$object->{'right'}.
+$object->right
 
 If a path component already has a dot in it, you may escape the dot
 with a backslash, as in:
@@ -978,8 +1013,18 @@ autogenerated methods are functionally equivalent to the following:
 
    $map = $clone->get('Map')->fetch;
 
-The list and scalar context semantics are the same as in
-B<get()>.  
+The scalar context semantics are also slightly different.  In a scalar
+context, the autogenerated function will *always* move one step to the
+right.
+
+The list context semantics are identical to get().  If you want to
+dereference all members of a multivalued tag, you have to do so manually:
+
+  @papers = $author->Paper;
+  foreach (@papers) { 
+    my $paper = $_->fetch;
+    print  $paper->asString;
+  }
 
 You can provide an optional positional index to rapidly navigate
 through the tree or to obtain tag[2] behavior.  In the following
@@ -998,6 +1043,12 @@ You may also position at a subtag, using this syntax:
 Both named tags and positions can be combined as follows:
 
      $lab_address = $object->Laboratory(Address=>2);
+
+** Note that the semantics of the autogenerated methods have changed
+subtly between version 1.57 (the last stable release) and version 1.62.   
+In earlier versions, calling an autogenerated method in a scalar context
+returned the subtree rooted at the tag.  In the current version, an
+implicit right() and dereference is performed.
 
 =head2 fetch() method
 
@@ -1110,12 +1161,8 @@ asTable() returns the object as a tab-delimited text table.
 
     $object->asAce;
 
-asAce() returns the object as a tab-delimited text table with B<all>
-the intermediate tags filled in.  It is something like an Ace dump,
-but not really, because the table cells aren't escaped for proper ACE
-parsing, so it can't be fed back into ACE.  Sean Walsh
-(wsean@nasc.nott.ac.uk) thought this would be a "handy feature," and
-I've implemented it.  Suggestions are welcome.
+asAce() returns the object as a tab-delimited text table in ".ace"
+format.
 
 =head2 asHTML() method
 
@@ -1158,7 +1205,8 @@ Here's a complete example:
   ($gif,$boxes) = $object->asGIF();
   ($gif,$boxes) = $object->asGIF(-clicks=>[[$x1,$y1],[$x2,$y2]...]
 	                         -dimensions=>[$width,$height],
-				 -display => $display_type
+				 -display => $display_type,
+				 -view    => $view_type
 	                         );
 
 asGIF() returns the object as a GIF image.  The contents of the GIF
@@ -1180,6 +1228,10 @@ The optional B<-display> argument allows you to specify an alternate
 display for the object.  For example, Clones can be displayed either
 with the PMAP display or with the TREE display.  If not specified, the
 default display is used.
+
+The optional B<-view> argument allows you to specify an alternative
+view for MAP objects only.  If not specified, you'll get the default
+view.
 
 asGIF() returns a two-element array.  The first element is the GIF
 data.  The second element is an array reference that indicates special 
@@ -1453,11 +1505,24 @@ one.
 
 =head2 error() method
     
-    $object->error;
+    $error = $object->error;
 
 Returns the error from the previous operation, if any.  As in
 Ace::error(), this string will only have meaning if the previous
 operation returned a result code indicating an error.
+
+=head2 factory() method
+
+    $package = $object->factory;
+
+When a root Ace object instantiates its tree of tags and values, it
+creates a hierarchical structure of Ace::Object objects.  The
+factory() method determines what class to bless these subsidiary
+objects into.  By default, they are Ace::Object objects, but you can
+override this method in a child class in order to create more
+specialized Ace::Object classes.  The method should return a string
+corresponding to the package to bless the object into.  It receives
+the current Ace::Object as its first argument.
 
 =head2 debug() method
 
@@ -1469,7 +1534,8 @@ integers produce progressively more verbose messages.
 
 =head1 SEE ALSO
 
-L<Ace>, L<Ace::Model>, L<Ace::Object>, L<Ace::Local>
+L<Ace>, L<Ace::Model>, L<Ace::Object>, L<Ace::Local>,
+L<Ace::Sequence>,L<Ace::Sequence::Multi>
 
 =head1 AUTHOR
 
@@ -1486,6 +1552,7 @@ disclaimers of warranty.
 
 
 # AUTOLOADED METHODS GO HERE
+
 ### Return the pretty-printed HTML table representation ###
 ### may pass a code reference to add additional formatting to cells ###
 sub asHTML {
@@ -1569,11 +1636,18 @@ sub asString {
 #                                   -dimensions=>[$x,$y]);
 sub asGif {
   my $self = shift;
-  my ($clicks,$dimensions,$display) = rearrange(['CLICKS',
-						 ['DIMENSIONS','DIM'],
-						 'DISPLAY'],@_);
+  my ($clicks,$dimensions,$display,$view) = rearrange(['CLICKS',
+						       ['DIMENSIONS','DIM'],
+						       'DISPLAY',
+						       'VIEW'],@_);
   $display = "-D $display" if $display;
-  my @commands = "gif display $display @{[$self->class]} \"@{[$self->name]}\"";
+  $view    = "-view $view" if $view;
+  my @commands;
+  if ($view) {
+      @commands = "gif map \"@{[$self->name]}\" $view";
+  } else {
+      @commands = "gif display $display $view @{[$self->class]} \"@{[$self->name]}\"";
+  }
   push(@commands,"Dimensions @$dimensions") if ref($dimensions);
   push(@commands,map { "mouseclick @{$_}" } @$clicks) if ref($clicks);
   push(@commands,"gifdump -");
@@ -1581,10 +1655,12 @@ sub asGif {
   # do the query
   my $data = $self->{'db'}->raw_query(join(' ; ',@commands));
 
+  # A $' has been removed here to improve speed -- tim.cutts@incyte.com 2 Sep 1999
+
   # did this query succeed?
-  return unless $data=~m!^// (\d+) bytes\n!m;
-  my $bytes = $1;
-  my $trim = $';  # everything after the match
+  my ($bytes, $trim);
+  return unless ($bytes, $trim) = $data=~m!^// (\d+) bytes\n(.+)!sm;
+
   my $gif = substr($trim,0,$bytes);
   
   # now process the boxes
@@ -1609,22 +1685,22 @@ sub asGif {
 ############## timestamp and comment information ############
 sub timestamp {
     my $self = shift;
-    return $self->{'timestamp'} = $_[0] if defined $_[0];
-    if ($self->{'db'} && !$self->{'timestamp'}) {
+    return $self->{'.timestamp'} = $_[0] if defined $_[0];
+    if ($self->{'db'} && !$self->{'.timestamp'}) {
       $self->_fill;
       $self->_parse;
     }
-    return $self->{'timestamp'};
+    return $self->{'.timestamp'};
 }
 
 sub comment {
     my $self = shift;
-    return $self->{'comment'} = $_[0] if defined $_[0];
-    if ($self->{'db'} && !$self->{'comment'}) {
+    return $self->{'.comment'} = $_[0] if defined $_[0];
+    if ($self->{'db'} && !$self->{'.comment'}) {
       $self->_fill;
       $self->_parse;
     }
-    return $self->{'comment'};
+    return $self->{'.comment'};
 }
 
 ### Return list of all the tags in the object ###
@@ -1651,17 +1727,17 @@ sub delete {
   @values = map { ref($_) && ref($_) eq 'ARRAY' ? @$_ : $_ } ($oldvalue,@rest) 
     if defined($oldvalue);
   my $row = join(".",($tag,map { (my $x = $_) =~s/\./\\./g; $x } @values));
-  my $subtree = $self->at($row,1);  # returns the parent
+  my $subtree = $self->at($row,undef,1);  # returns the parent
 
   if (@values
-      && defined($subtree->{'right'})
-      && "$subtree->{'right'}" eq $oldvalue) {
-    $subtree->{'right'} = $subtree->{'right'}->down;
+      && defined($subtree->{'.right'})
+      && "$subtree->{'.right'}" eq $oldvalue) {
+    $subtree->{'.right'} = $subtree->{'.right'}->down;
   } else {
-    $subtree->{'down'} = $subtree->{'down'}->{'down'}
+    $subtree->{'.down'} = $subtree->{'.down'}->{'.down'}
   }
 
-  push(@{$self->{'update'}},join(' ','-D',
+  push(@{$self->{'.update'}},join(' ','-D',
 				 map { Ace::AceDB->freeprotect($_) } ($self->_split_tags($tag),@values)));
   delete $self->{'.PATHS'}; # uncache cached values
   1;
@@ -1681,9 +1757,9 @@ sub kill {
   # uncache cached values and clear the object out
   # as best we can
   delete $self->{'.PATHS'}; 
-  delete $self->{'right'};
-  delete $self->{'raw'};
-  delete $self->{'down'};
+  delete $self->{'.right'};
+  delete $self->{'.raw'};
+  delete $self->{'.down'};
   1;
 }
 
@@ -1704,10 +1780,10 @@ sub isComment {
 #  returns true if this is a valid thing to do #
 sub add_row {
   my $self = shift;
-  my($tag,$newvalue,@rest) = rearrange([['TAG','PATH'],'VALUE'],@_);
+  my($tag,@newvalue) = rearrange([['TAG','PATH'],'VALUE'],@_);
 
   # flatten array refs into array
-  my @values = map { ref($_) && ref($_) eq 'ARRAY' ? @$_ : $_ } ($newvalue,@rest);
+  my @values = map { ref($_) && ref($_) eq 'ARRAY' ? @$_ : $_ } @newvalue;
 
   # make sure that this entry doesn't already exist
   my $row = join(".",($tag,map { (my $x = $_) =~s/\./\\./g; $x } @values));
@@ -1722,8 +1798,9 @@ sub add_row {
     } else {
       $_ = $self->new('scalar',$_);
     }
-    $previous->{'right'} = $_ if $previous;
+    $previous->{'.right'} = $_ if $previous;
     $previous = $_;
+    $_->{'.right'} = undef; # make sure it doesn't automatically expand!
   }
 
   # position at the indicated tag (creating it if necessary)
@@ -1732,18 +1809,18 @@ sub add_row {
   foreach (@tags) {
     $p = $p->_insert($_);
   }
-  if ($p->{'right'}) {
-    $p = $p->{'right'};
+  if ($p->{'.right'}) {
+    $p = $p->{'.right'};
     while (1) { 
-      last unless $p->{'down'};
-      $p = $p->{'down'};
+      last unless $p->{'.down'};
+      $p = $p->{'.down'};
     }
-    $p->{'down'} = $values[0];
+    $p->{'.down'} = $values[0];
   } else {
-    $p->{'right'} = $values[0];
+    $p->{'.right'} = $values[0];
   }
 
-  push(@{$self->{'update'}},join(' ',map { Ace::AceDB->freeprotect($_) } (@tags,@values)));
+  push(@{$self->{'.update'}},join(' ',map { Ace::AceDB->freeprotect($_) } (@tags,@values)));
   delete $self->{'.PATHS'}; # uncache cached values
   1;
 }
@@ -1761,18 +1838,18 @@ sub add_tree {
   foreach (@tags) {
     $p = $p->_insert($_);
   }
-  # Copy the subtree to 
-  if ($p->{'right'}) {
-    $p = $p->{'right'};
+  # Copy the subtree too
+  if ($p->{'.right'}) {
+    $p = $p->{'.right'};
     while (1) { 
-      last unless $p->{'down'};
-      $p = $p->{'down'};
+      last unless $p->{'.down'};
+      $p = $p->{'.down'};
     }
-    $p->{'down'} = $value->{'right'};
+    $p->{'.down'} = $value->{'.right'};
   } else {
-    $p->{'right'} = $value->{'right'};
+    $p->{'.right'} = $value->{'.right'};
   }
-  push(@{$self->{'update'}},map { join(' ',@tags,$_) } split("\n",$value->asAce));
+  push(@{$self->{'.update'}},map { join(' ',@tags,$_) } split("\n",$value->asAce));
   delete $self->{'.PATHS'}; # uncache cached values
   1;
 }
@@ -1801,10 +1878,10 @@ sub commit {
     return unless defined $name;
 
     $name =~ s/([^a-zA-Z0-9_-])/\\$1/g;
-    return 1 unless exists $self->{'update'} && $self->{'update'};
+    return 1 unless exists $self->{'.update'} && $self->{'.update'};
 
     my $cmd = join('; ',"$self->{'class'} : $name",
-		   @{$self->{'update'}});
+		   @{$self->{'.update'}});
     warn $cmd if $self->debug;
     my $result = $db->raw_query("parse = $cmd");
 
@@ -1814,22 +1891,22 @@ sub commit {
     } elsif ($result =~ /sorry|parse error/mi) {
 	$Ace::ERR = $result;
     }
-    undef $self->{'update'};
+    undef $self->{'.update'};
     return !$Ace::ERR;
 }
 
 sub rollback {
     my $self = shift;
-    undef $self->{'update'};
+    undef $self->{'.update'};
     # this will force object to be reloaded from database
     # next time it is needed.
-    delete $self->{'right'};
+    delete $self->{'.right'};
     1;
 }
 
 sub debug {
     my $self = shift;
-    return defined($_[0]) ? $self->{debug}=$_[0] : $self->{debug};
+    return defined($_[0]) ? $self->{'.debug'}=$_[0] : $self->{'.debug'};
 }
 
 ### Get or set the date style (actually calls through to the database object) ###
@@ -1844,9 +1921,9 @@ sub date_style {
 sub _asTable {
     my($self,$out,$position,$level) = @_;
 
-    if ($self->{raw} and !$self->db->timestamps) {  # we still have raw data, so we can optimize
-      my ($a,$start,$end) = @{$self}{qw/col start_row end_row/};
-      my @to_append = map { join("\t",@{$_}[$a..$#{$_}]) } @{$self->{'raw'}}[$start..$end];
+    if ($self->{'.raw'} and !$self->db->timestamps) {  # we still have raw data, so we can optimize
+      my ($a,$start,$end) = @{$self}{ qw(.col .start_row .end_row) };
+      my @to_append = map { join("\t",@{$_}[$a..$#{$_}]) } @{$self->{'.raw'}}[$start..$end];
       my $new_row;
       foreach (@to_append) {
 	# hack alert
@@ -1924,17 +2001,17 @@ sub _default_makeHTML {
 # tag, if already there.
 sub _insert {
     my ($self,$tag) = @_;
-    my $p = $self->{'right'};
-    return $self->{'right'} = $self->new('tag',$tag)
+    my $p = $self->{'.right'};
+    return $self->{'.right'} = $self->new('tag',$tag)
 	unless $p;
     while ($p) {
 	return $p if "$p" eq $tag;
-	last unless $p->{'down'};
-	$p = $p->{'down'};
+	last unless $p->{'.down'};
+	$p = $p->{'.down'};
     }
     # if we get here, then we didn't find it, so
     # insert at the bottom
-    return $p->{'down'} = $self->new('tag',$tag);
+    return $p->{'.down'} = $self->new('tag',$tag);
 }
 
 # This is unsatisfactory because it duplicates much of the code
@@ -1943,10 +2020,10 @@ sub _asAce {
   my($self,$out,$level,$tags) = @_;
 
   # ugly optimization for speed
-  if ($self->{raw}){
-    my ($a,$start,$end) = @{$self}{qw/col start_row end_row/};
+  if ($self->{'.raw'}){
+    my ($a,$start,$end) = @{$self}{qw(.col .start_row .end_row)};
     my (@last);
-    foreach (@{$self->{'raw'}}[$start..$end]){
+    foreach (@{$self->{'.raw'}}[$start..$end]){
       my $j=1;
       $$out .= join("\t",@$tags) . "\t" if ($level==0) && (@$tags);
       my (@to_modify) = @{$_}[$a..$#{$_}];

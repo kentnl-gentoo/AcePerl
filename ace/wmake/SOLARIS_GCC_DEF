@@ -15,8 +15,8 @@
 #################################################################
 
 NAME = SOLARIS
-COMPILER = cc -O2 -I/usr/openwin/include -DNO_LEFT_CASTING -DACEDB4
-LINKER = cc -L/usr/openwin/lib -R/usr/openwin/lib
+COMPILER = gcc -O2 -I/usr/openwin/include -DNO_LEFT_CASTING -DACEDB4
+LINKER = gcc -L/usr/openwin/lib -R/usr/openwin/lib
 
 # -DWCS causes a problem, class versus Xlib.h
 LIBS = -lm  -lnsl -lsocket -lmalloc

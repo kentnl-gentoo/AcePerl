@@ -11,6 +11,7 @@ WriteMakefile(
 	      'VERSION_FROM' => 'Ace.pm', # finds $VERSION
 	      'MYEXTLIB'     => 'ace/libaceperl.a',
 	      'LIBS'         => ['-lc'],
+	      'PMLIBDIRS'    => ['GFF','Ace'],
 	      'DEFINE'	     => '',
 	      'OBJECT'       => '$(O_FILES)',
 	      'XSPROTOARG'   => '-noprototypes',
@@ -19,7 +20,8 @@ WriteMakefile(
                                  'SUFFIX' => 'gz',
 	                         'ZIP'=>'/usr/bin/zip','ZIPFLAGS'=>'-rl'
 			      },
-	      'clean'        => {'FILES' => 'ace/lib* ace/*.o rpcace*.[ch]'},
+	      PL_FILES => {'make_docs.PL' => '.docs'},
+	      'clean'        => {'FILES' => 'ace/lib* ace/*.o ace/rpcace*.[ch]'},
 );
 
 exit 0;

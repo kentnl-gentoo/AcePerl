@@ -1,3 +1,33 @@
+1.62	5/18/2000
+	1. **NOTE** Redid the automatic accessors.  There is now always an implicit 
+	move to the *right* of a tag when you fetch it as a method.  Use
+	$object->Tag(0) to get the old default behavior.  Be warned, you used to
+	have to do this to get to the object to the right of the Sequence tag
+		$sequence = $clone->Sequence->right
+	You now only have to do this:
+		$sequence = $clone->Sequence
+	2. Removed some uninitialized variable warnings from Ace::Sequence
+1.60	11/01/99
+	1. Fixed suspended giface processes when using iterators.
+	2. Added explicit close() method.
+1.59	9/8/99
+	1. Patches to Ace::Local & Ace::Object from Tim Cutts <tim.cutts@incyte.com> 
+		to improve efficiency.
+1.58	8/3/99
+	1. Tiny change in Model.pm to accomodate @tags.
+1.57	7/22/99
+	1. 1.56 was contaminated with leftover rpc* files in the ace/ subdirectory, this causes
+		builds on several architectures to fail.
+	2. Fixed "ambiguous variable" warnings in the regression tests.
+1.56	7/9/99
+	1. Added Ace::Sequence, Ace::Sequence::Feature and Ace::Sequence::Feature classes
+	2. Added Ace::Sequence::Multi class
+	3. Regression tests now point to stein.cshl.org
+	4. Added more documentation, including more acedb/aceserver hints
+	5. Added more makefiles
+1.55	2/26/99
+	1. Patched nulls appearing in raw query strings.  Was causing fetch() and list()
+	to return fewer than the correct number of objects (approximately 0.2% loss).
 1.54	2/10/99
 	1. Fixed spin-loop (polling) bug in Ace::Local.  Should no longer
 	consume 99% of CPU time while waiting for tace to answer a long query.

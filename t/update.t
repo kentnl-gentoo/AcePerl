@@ -3,8 +3,8 @@
 # Tests of object-level fetches and following
 ######################### We start with some black magic to print on failure.
 use lib '../blib/lib','../blib/arch';
-use constant HOST => $ENV{ACEDB_HOST} || 'beta.crbm.cnrs-mop.fr';
-use constant PORT => $ENV{ACEDB_PORT} || 20000100;
+use constant HOST => $ENV{ACEDB_HOST} || 'stein.cshl.org';
+use constant PORT => $ENV{ACEDB_PORT} || 200005;
 
 BEGIN {$| = 1; print "1..17\n"; }
 END {print "not ok 1\n" unless $loaded;}
@@ -22,11 +22,11 @@ sub test {
 
 # Test code:
 my ($db,$obj);
-test(2,$db = Ace->connect(-host=>HOST,-port=>PORT),
+test(2,$db = Ace->connect(-host=>HOST,-port=>PORT,-timeout=>50),
      "couldn't establish connection");
 die "Couldn't establish connection to database.  Aborting tests.\n" unless $db;
 test(3,$me = Ace::Object->new('Author','Dent AD',$db),"couldn't create new object");
-test(4,$me->add('Full_name','Arthur D. Dent'));
+test(4,$me->add('Also_known_as','Arthur D. Dent'));
 test(5,$me->add('Laboratory','FF'));
 test(6,$me->add('Address.Mail','Heart of Gold'));
 test(7,$me->add('Address.Mail','Western End'));
