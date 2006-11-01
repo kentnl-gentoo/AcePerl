@@ -2,7 +2,7 @@ package Ace::Object;
 use strict;
 use Carp qw(:DEFAULT cluck);
 
-# $Id: Object.pm,v 1.56 2005/03/09 15:43:56 lstein Exp $
+# $Id: Object.pm,v 1.60 2005/04/13 14:26:08 lstein Exp $
 
 use overload 
     '""'       => 'name',
@@ -33,8 +33,6 @@ $VERSION = '1.66';
 sub AUTOLOAD {
     my($pack,$func_name) = $AUTOLOAD=~/(.+)::([^:]+)$/;
     my $self = $_[0];
-
-    warn "AUTOLOAD: $self->$func_name()" if Ace->debug;
 
     # This section works with Autoloader
     my $presumed_tag = $func_name =~ /^[A-Z]/ && $self->isObject;  # initial_cap 
@@ -73,7 +71,6 @@ sub AUTOLOAD {
 
       # otherwise dereference if the current thing is an object or we are at a tag
       # and the thing to the right is an object.
-#      return $obj->fetch if $obj->isObject || ($obj->right && $obj->right->isObject);  # this heuristic stinks
       return $obj->fetch if $obj->isObject && !$obj->isRoot;  # always dereference objects
 
       # otherwise return the thing itself
@@ -88,6 +85,7 @@ sub AUTOLOAD {
 
 sub DESTROY {
   my $self = shift;
+
   return unless defined $self->{class};      # avoid working with temp objects from a search()
   return if caller() =~ /^(Cache\:\:|DB)/;  # prevent recursion in FileCache code
   my $db = $self->db or return;
@@ -95,7 +93,7 @@ sub DESTROY {
   return unless $self->isRoot;
 
   if ($self->_dirty) {
-    cluck "Destroy for ",overload::StrVal($self)," ",$self->name if Ace->debug;
+    warn "Destroy for ",overload::StrVal($self)," ",$self->class,':',$self->name if Ace->debug;
     $self->_dirty(0);
     $db->file_cache_store($self);
   }
@@ -280,97 +278,105 @@ sub search {
   my ($subtag,$pos,$filled) = rearrange(['SUBTAG','POS',['FILL','FILLED']],@_);
   my $lctag = lc $tag;
 
-  # filled implies a follow
-  return $self->follow(-tag=>$tag,-filled=>$filled) if $filled;
+  # With caching, the old way of following ends up cloning the object
+  # -- which we don't want.  So more-or-less emulate the earlier
+  # behavior with an explicit get and fetch
+  #  return $self->follow(-tag=>$tag,-filled=>$filled) if $filled;
+  if ($filled) {
+    my @node = $self->search($tag) or return;  # watch out for recursion!
+    my @obj  = map {$_->fetch} @node;
+    foreach (@obj) {$_->right if defined $_};  # trigger a fill
+    return wantarray ? @obj : $obj[0];
+  }
 
-    TRY: {
+ TRY: {
 
-	# look in our tag cache first
-	if (exists $self->{'.PATHS'}) {
+    # look in our tag cache first
+    if (exists $self->{'.PATHS'}) {
 
-	  # we've already cached the desired tree
-	  last TRY if exists $self->{'.PATHS'}{$lctag};
-
-	  # not cached, so try parents of tag
-	  my $m = $self->model;
-	  my @parents = $m->path($lctag) if $m;
-	  my $tree;
-	  foreach (@parents) {
-	    ($tree = $self->{'.PATHS'}{lc $_}) && last;
-	  }
-	  if ($tree) {
-	    $self->{'.PATHS'}{$lctag} = $tree->search($tag);
-	    $self->_dirty(1);
-	    last TRY;
-	  }
-	}
-
-	# If the object hasn't been filled already, then we can use
-	# acedb's query mechanism to fetch the subobject.  This is a
-	# big win for large objects.  ...However, we have to disable
-	# this feature if timestamps are active.
-	unless ($self->filled) {
-	  my $subobject = $self->newFromText(
-					     $self->db->show($self->class,$self->name,$tag),
-					     $self->db
-					    );
-	  if ($subobject) {
-	    $subobject->{'.nocache'}++;
-	    $self->_attach_subtree($lctag => $subobject);
-	  } else {
-	    $self->{'.PATHS'}{$lctag} = undef;
-	  }
-	  $self->_dirty(1);
-	  last TRY;
-	}
-	
-	my @col = $self->col;
-	foreach (@col) {
-	  next unless $_->isTag;
-	  if (lc $_ eq $lctag) {
-	    $self->{'.PATHS'}{$lctag} = $_;
-	    $self->_dirty(1);
-	    last TRY;
-	  }
-	}
-
-	# if we get here, we didn't find it in the column,
-	# so we call ourselves recursively to find it
-	foreach (@col) {
-	  next unless $_->isTag;
-	  if (my $r = $_->search($tag)) {
-	    $self->{'.PATHS'}{$lctag} = $r;
-	    $self->_dirty(1);
-	    last TRY;
-	  }
-	}
-
-	# If we got here, we just didn't find it.  So tag the cache
-	# as empty so that we don't try again
-	$self->{'.PATHS'}{$lctag} = undef;
-	$self->_dirty(1);
+      # we've already cached the desired tree
+      last TRY if exists $self->{'.PATHS'}{$lctag};
+      
+      # not cached, so try parents of tag
+      my $m = $self->model;
+      my @parents = $m->path($lctag) if $m;
+      my $tree;
+      foreach (@parents) {
+	($tree = $self->{'.PATHS'}{lc $_}) && last;
       }
-
-    my $t = $self->{'.PATHS'}{$lctag};
-    return unless $t;
-
-    if (defined $subtag) {
-      if ($subtag =~ /^\d+$/) {
-	$pos = $subtag;
-      } else {  # position on subtag and search again
-	return $t->fetch->search($subtag,$pos) 
-	  if $t->isObject  || (defined($t->right) and $t->right->isObject);
-	return $t->search($subtag,$pos);
+      if ($tree) {
+	$self->{'.PATHS'}{$lctag} = $tree->search($tag);
+	$self->_dirty(1);
+	last TRY;
       }
     }
 
-    return defined $pos ? $t->right($pos) : $t  unless wantarray;
+    # If the object hasn't been filled already, then we can use
+    # acedb's query mechanism to fetch the subobject.  This is a
+    # big win for large objects.  ...However, we have to disable
+    # this feature if timestamps are active.
+    unless ($self->filled) {
+      my $subobject = $self->newFromText(
+					 $self->db->show($self->class,$self->name,$tag),
+					 $self->db
+					);
+      if ($subobject) {
+	$subobject->{'.nocache'}++;
+	$self->_attach_subtree($lctag => $subobject);
+      } else {
+	$self->{'.PATHS'}{$lctag} = undef;
+      }
+      $self->_dirty(1);
+      last TRY;
+    }
+	
+    my @col = $self->col;
+    foreach (@col) {
+      next unless $_->isTag;
+      if (lc $_ eq $lctag) {
+	$self->{'.PATHS'}{$lctag} = $_;
+	$self->_dirty(1);
+	last TRY;
+      }
+    }
 
-    # We do something verrrry interesting in an array context.
-    # If no position is defined, we return the column to the right.
-    # If a position is defined, we return everything $POS tags
-    # to the right (so-called tag[2] system).
-    return $t->col($pos);
+    # if we get here, we didn't find it in the column,
+    # so we call ourselves recursively to find it
+    foreach (@col) {
+      next unless $_->isTag;
+      if (my $r = $_->search($tag)) {
+	$self->{'.PATHS'}{$lctag} = $r;
+	$self->_dirty(1);
+	last TRY;
+      }
+    }
+
+    # If we got here, we just didn't find it.  So tag the cache
+    # as empty so that we don't try again
+    $self->{'.PATHS'}{$lctag} = undef;
+    $self->_dirty(1);
+  }
+
+  my $t = $self->{'.PATHS'}{$lctag};
+  return unless $t;
+
+  if (defined $subtag) {
+    if ($subtag =~ /^\d+$/) {
+      $pos = $subtag;
+    } else {  # position on subtag and search again
+      return $t->fetch->search($subtag,$pos) 
+	if $t->isObject  || (defined($t->right) and $t->right->isObject);
+      return $t->search($subtag,$pos);
+    }
+  }
+
+  return defined $pos ? $t->right($pos) : $t  unless wantarray;
+
+  # We do something verrrry interesting in an array context.
+  # If no position is defined, we return the column to the right.
+  # If a position is defined, we return everything $POS tags
+  # to the right (so-called tag[2] system).
+  return $t->col($pos);
 }
 
 # utility routine used in partial tree caching

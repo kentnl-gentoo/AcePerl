@@ -97,10 +97,10 @@ sub getConfig {
   my $path = $package->get_config || $package->resolveConf($file);
 
   return unless -r $path;
-  return $CONFIG{$name} if exists $CONFIG{$name} and $CACHETIME{$name} >= (stat(_))[9];
+  return $CONFIG{$name} if exists $CONFIG{$name} and $CACHETIME{$name} >= (stat($path))[9];
   return unless $CONFIG{$name} = $package->_load($path);
   $CONFIG{$name}->{'name'} ||= $name;  # remember name
-  $CACHETIME{$name} = (stat(_))[9];
+  $CACHETIME{$name} = (stat($path))[9];
   return $CONFIG{$name};
 }
 
@@ -142,8 +142,8 @@ sub map_url {
   # if we get here, then take the first display
   my @displays = $self->displays($class,$name);
   push @displays,$self->displays('default') unless @displays;
-  my $n = CGI->escape($name);
-  my $c = CGI->escape($class);
+  my $n = CGI::escape($name);
+  my $c = CGI::escape($class);
   return ($displays[0],"name=$n;class=$c") if $displays[0];
 
   return unless @result = $self->getConfig('default')->Url_mapper->($display,$name,$class);

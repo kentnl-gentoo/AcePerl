@@ -68,6 +68,7 @@ sub error { $Ace::Error; }
 sub query {
   my $self = shift;
   my ($request,$parse) = @_;
+  warn "query($request)" if Ace->debug;
   unless ($self->_send_msg($request,$parse)) {
     $self->{status} = STATUS_ERROR;
     return _error("Write to socket server failed: $!");
