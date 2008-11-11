@@ -20,7 +20,7 @@ use overload
 
 # Optional exports
 @EXPORT_OK = qw(rearrange ACE_PARSE);
-$VERSION = '1.91';
+$VERSION = '1.92';
 
 use constant STATUS_WAITING => 0;
 use constant STATUS_PENDING => 1;
@@ -331,6 +331,8 @@ sub file_cache_fetch {
 sub file_cache_store {
   my $self = shift;
   my $obj  = shift;
+
+  return unless $obj->name;
 
   my $key = join ':',$obj->class,$obj->name;
   my $cache = $self->cache or return;
