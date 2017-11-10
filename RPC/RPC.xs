@@ -152,12 +152,6 @@ int arg;
     case 'Z':
 	break;
     case '_':
-	if (strEQ(name, "_ACECLIENT_"))
-#ifdef _ACECLIENT_
-	    return _ACECLIENT_;
-#else
-	    goto not_there;
-#endif
 	break;
     }
     errno = EINVAL;
