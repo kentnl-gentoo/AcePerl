@@ -18,9 +18,9 @@
 NAME = LINUX
 COMPILER = gcc -g -Wall -O2 -DACEDB4
 LINKER = gcc -g
-USEROPTS=-fPIC
+USEROPTS=-I/usr/include/tirpc -fPIC
 
-LIBS = -lm
+LIBS = -ltirpc -lm
 Xt_LIBS = -L/usr/X11R6/lib -lXaw -lXt -lXmu -lXext -lX11
 LEX_LIBS = 
 
