@@ -1,0 +1,6 @@
+NAME = DARWIN
+COMPILER = clang -fwritable-strings -DACEDB4 -DPOSIX
+LINKER = clang
+
+LIBS = -lm
+
